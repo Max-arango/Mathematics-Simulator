@@ -5,6 +5,7 @@ export const ABS_TOL = 1e-9;           // absolute convergence tolerance
 export const REL_TOL = 1e-9;           // relative convergence tolerance
 export const MAX_ITERATIONS = 100;     // iterative solver cap
 export const DERIV_H = 1e-6;           // step for numerical (finite-difference) derivatives
+export const MAX_SAMPLES = 1e7;        // upper bound on Monte Carlo / sampling counts (sampling domains import this)
 
 /** |a − b| within absolute tolerance. */
 export const nearlyEqual = (a: number, b: number, tol = ABS_TOL): boolean => Math.abs(a - b) <= tol;

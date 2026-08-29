@@ -10,6 +10,7 @@ export interface ApproxMeta {
   iterations?: number;
   converged?: boolean;
   warnings?: string[];
+  method?: string;     // algorithm name for provenance, e.g. "RK4"
 }
 
 export type MathResult<T> =
@@ -28,6 +29,8 @@ export const divergent = <T>(reason?: string): MathResult<T> => ({ kind: "diverg
 export const undefinedResult = <T>(reason?: string): MathResult<T> => ({ kind: "undefined", reason });
 export const unsupported = <T>(reason?: string): MathResult<T> => ({ kind: "unsupported", reason });
 export const domainError = <T>(reason?: string): MathResult<T> => ({ kind: "domainError", reason });
+export const notConverged = <T>(value?: T, reason?: string): MathResult<T> => ({ kind: "notConverged", value, reason });
+export const numericalError = <T>(reason?: string): MathResult<T> => ({ kind: "numericalError", reason });
 
 /** True only for exact/approx results that carry a value. */
 export const hasValue = <T>(r: MathResult<T>): r is { kind: "exact" | "approx"; value: T } & ApproxMeta =>
