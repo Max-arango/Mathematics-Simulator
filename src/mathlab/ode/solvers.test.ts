@@ -158,8 +158,8 @@ describe("registry + input validation", () => {
   it("solveODE dispatches by name", () => {
     expect(finalY(solveODE("rk4", grow, { steps: 100 }))[0]).toBeCloseTo(Math.E, 6);
   });
-  it("registry exposes the four fixed methods", () => {
-    expect(Object.keys(ODE_METHODS).sort()).toEqual(["euler", "heun", "rk2", "rk4"]);
+  it("registry exposes all four fixed methods", () => {
+    for (const name of ["euler", "heun", "rk2", "rk4"]) expect(ODE_METHODS[name]).toBeDefined();
   });
   it("unknown method name → InvalidInputError", () => {
     expect(() => solveODE("nope", grow, { steps: 10 })).toThrow(InvalidInputError);

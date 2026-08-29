@@ -3,6 +3,7 @@
 // and read the self-describing result, so no caller changes when methods are added.
 import { InvalidInputError } from "../core/errors.ts";
 import { euler, heun, rk2, rk4 } from "./solvers.ts";
+import { rkf45 } from "./adaptive.ts";
 import type { ODEMethod, ODEProblem, ODEResult, ODEOptions } from "./types.ts";
 
 export const ODE_METHODS: Record<string, ODEMethod> = {
@@ -10,6 +11,7 @@ export const ODE_METHODS: Record<string, ODEMethod> = {
   [heun.name]: heun,
   [rk2.name]: rk2,
   [rk4.name]: rk4,
+  [rkf45.name]: rkf45,
 };
 
 /** Solve an IVP by method name. Throws InvalidInputError on an unknown name. */
