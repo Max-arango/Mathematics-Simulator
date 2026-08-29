@@ -9,8 +9,9 @@ import { FourDView } from "./components/fourd/FourDView.tsx";
 import { TopoView } from "./components/topo/TopoView.tsx";
 import { useStore, type AppMode } from "./store.ts";
 
-// KaTeX ships with the docs only — keep it out of the initial bundle.
+// KaTeX-heavy views are lazy-loaded to keep the initial bundle lean.
 const DocsView = lazy(() => import("./components/docs/DocsView.tsx").then((m) => ({ default: m.DocsView })));
+const InspectorView = lazy(() => import("./components/inspector/InspectorView.tsx").then((m) => ({ default: m.InspectorView })));
 
 /** Drives parameter animation; animTick no-ops (no set) while paused. */
 function useAnimDriver() {
@@ -37,6 +38,7 @@ function ModeNav() {
     { id: "bloch", label: "Bloch Sphere" },
     { id: "fourd", label: "4D" },
     { id: "topo", label: "Topology" },
+    { id: "inspector", label: "Inspector" },
     { id: "docs", label: "Docs" },
   ];
   return (
@@ -77,6 +79,10 @@ export function App() {
         <FourDView />
       ) : appMode === "topo" ? (
         <TopoView />
+      ) : appMode === "inspector" ? (
+        <Suspense fallback={<div className="p-8 text-sm text-slate-500">Loading…</div>}>
+          <InspectorView />
+        </Suspense>
       ) : appMode === "docs" ? (
         <Suspense fallback={<div className="p-8 text-sm text-slate-500">Loading…</div>}>
           <DocsView />
