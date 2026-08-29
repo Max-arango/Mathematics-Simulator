@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { eigSymmetric } from "./eigen.ts";
-import { make, mul, transpose, identity, scale, zeros, type Matrix } from "./matrix.ts";
+import { eigSymmetric, eigen } from "./eigen.ts";
+import { make, mul, transpose, identity, scale, zeros, trace, determinant, type Matrix } from "./matrix.ts";
+import { abs, type Complex } from "../complex/complex.ts";
 
 const approxEqualMatrix = (a: Matrix, b: Matrix, digits = 8): void => {
   expect(a.rows).toBe(b.rows);
@@ -196,5 +197,194 @@ describe("eigSymmetric preconditions throw", () => {
 
   it("grossly non-symmetric throws RangeError", () => {
     expect(() => eigSymmetric(make([[1, 2], [3, 4]]))).toThrow(RangeError);
+  });
+});
+
+// --- general (non-symmetric / complex-spectrum) eigen() -----------------------------
+
+// Multiset of real parts, ascending, for order-agnostic comparison.
+const realsAsc = (vs: Complex[]): number[] => vs.map((z) => z.re).sort((x, y) => x - y);
+
+describe("eigen diagonal & triangular", () => {
+  it("3×3 diagonal → eigenvalues equal the diagonal", () => {
+    const e = eigen(make([[2, 0, 0], [0, 5, 0], [0, 0, 1]]));
+    expect(e.converged).toBe(true);
+    expect(realsAsc(e.values)).toEqual([1, 2, 5].map((x) => x));
+    e.values.forEach((z) => expect(z.im).toBeCloseTo(0, 9));
+  });
+
+  it("3×3 upper-triangular → eigenvalues equal the diagonal", () => {
+    const e = eigen(make([[3, 1, 2], [0, 2, 4], [0, 0, 1]]));
+    expect(e.converged).toBe(true);
+    const r = realsAsc(e.values);
+    expect(r[0]).toBeCloseTo(1, 8);
+    expect(r[1]).toBeCloseTo(2, 8);
+    expect(r[2]).toBeCloseTo(3, 8);
+  });
+
+  it("2×2 diagonal (analytic path) → real eigenvalues", () => {
+    const e = eigen(make([[7, 0], [0, 3]]));
+    expect(e.values[0].re).toBeCloseTo(7, 12);
+    expect(e.values[1].re).toBeCloseTo(3, 12);
+    expect(e.diagonalizable).toBe(true);
+  });
+});
+
+describe("eigen cross-check vs eigSymmetric", () => {
+  it("symmetric 2×2 [[2,0],[0,3]] agrees with the symmetric solver", () => {
+    const A = make([[2, 0], [0, 3]]);
+    const g = eigen(A);
+    const s = eigSymmetric(A);
+    expect(s).not.toBeNull();
+    if (s) {
+      // both sorted descending by value
+      expect(g.values[0].re).toBeCloseTo(s.values[0], 10);
+      expect(g.values[1].re).toBeCloseTo(s.values[1], 10);
+    }
+  });
+});
+
+describe("eigen complex spectrum", () => {
+  it("rotation [[0,-1],[1,0]] → ±i", () => {
+    const e = eigen(make([[0, -1], [1, 0]]));
+    expect(e.values[0].re).toBeCloseTo(0, 10);
+    expect(e.values[1].re).toBeCloseTo(0, 10);
+    expect(Math.abs(e.values[0].im)).toBeCloseTo(1, 10);
+    expect(Math.abs(e.values[1].im)).toBeCloseTo(1, 10);
+    // conjugate pair: +i listed first by the documented tie-break
+    expect(e.values[0].im).toBeCloseTo(1, 10);
+    expect(e.values[1].im).toBeCloseTo(-1, 10);
+    // complex ⇒ no real eigenvectors, with a warning
+    expect(e.vectors[0]).toBeNull();
+    expect(e.vectors[1]).toBeNull();
+    expect(e.warnings.some((w) => w.includes("complex"))).toBe(true);
+  });
+
+  it("rotation-scaling [[1,-1],[1,1]] → 1±i (modulus √2, arg π/4)", () => {
+    const e = eigen(make([[1, -1], [1, 1]]));
+    e.values.forEach((z) => {
+      expect(z.re).toBeCloseTo(1, 10);
+      expect(Math.abs(z.im)).toBeCloseTo(1, 10);
+      expect(abs(z)).toBeCloseTo(Math.SQRT2, 10);
+    });
+    expect(Math.abs(Math.atan2(e.values[0].im, e.values[0].re))).toBeCloseTo(Math.PI / 4, 10);
+    // distinct (conjugate) spectrum ⇒ diagonalizable over ℂ
+    expect(e.diagonalizable).toBe(true);
+  });
+
+  it("3×3 companion of (x-2)(x²+1) → {2, ±i}", () => {
+    const e = eigen(make([[2, -1, 2], [1, 0, 0], [0, 1, 0]]));
+    expect(e.converged).toBe(true);
+    // one real eigenvalue ≈ 2 (largest modulus), then ±i
+    expect(e.values[0].re).toBeCloseTo(2, 6);
+    expect(e.values[0].im).toBeCloseTo(0, 6);
+    expect(e.values[1].im).toBeCloseTo(1, 6);
+    expect(e.values[2].im).toBeCloseTo(-1, 6);
+    expect(Math.abs(e.values[1].re)).toBeCloseTo(0, 6);
+  });
+});
+
+describe("eigen known real spectrum {1,2,3}", () => {
+  // companion matrix of (x-1)(x-2)(x-3) = x³ - 6x² + 11x - 6
+  const A = make([[6, -11, 6], [1, 0, 0], [0, 1, 0]]);
+  it("recovers {1,2,3} to ~6 digits", () => {
+    const e = eigen(A);
+    expect(e.converged).toBe(true);
+    const r = realsAsc(e.values);
+    expect(r[0]).toBeCloseTo(1, 6);
+    expect(r[1]).toBeCloseTo(2, 6);
+    expect(r[2]).toBeCloseTo(3, 6);
+    e.values.forEach((z) => expect(z.im).toBeCloseTo(0, 6));
+    expect(e.diagonalizable).toBe(true);
+  });
+
+  it("eigenvector property A·v ≈ λ·v for each real simple eigenvalue", () => {
+    const e = eigen(A);
+    e.values.forEach((z, j) => {
+      const v = e.vectors[j];
+      expect(v).not.toBeNull();
+      if (v) {
+        const Av = A.data.map((rowk) => rowk.reduce((acc, aij, k) => acc + aij * v[k], 0));
+        for (let i = 0; i < A.rows; i++) expect(Av[i]).toBeCloseTo(z.re * v[i], 6);
+      }
+    });
+  });
+});
+
+describe("eigen defective (Jordan block)", () => {
+  const A = make([[2, 1], [0, 2]]);
+  it("algebraic 2 / geometric 1, not diagonalizable, one honest eigenvector", () => {
+    const e = eigen(A);
+    expect(e.values[0].re).toBeCloseTo(2, 12);
+    expect(e.values[1].re).toBeCloseTo(2, 12);
+    expect(e.algebraicMultiplicity).toEqual([2]);
+    expect(e.geometricMultiplicity).toEqual([1]);
+    expect(e.diagonalizable).toBe(false);
+    expect(e.warnings.some((w) => w.includes("defective"))).toBe(true);
+    // exactly one real eigenvector returned; the surplus copy is null
+    const nonNull = e.vectors.filter((v) => v !== null);
+    expect(nonNull.length).toBe(1);
+    const v = nonNull[0]!;
+    const Av = A.data.map((rowk) => rowk.reduce((acc, aij, k) => acc + aij * v[k], 0));
+    expect(Av[0]).toBeCloseTo(2 * v[0], 10);
+    expect(Av[1]).toBeCloseTo(2 * v[1], 10);
+  });
+});
+
+describe("eigen non-defective repeated eigenvalue", () => {
+  it("diag(2,2,5): algebraic 2 / geometric 2 for λ=2, diagonalizable", () => {
+    const e = eigen(make([[2, 0, 0], [0, 2, 0], [0, 0, 5]]));
+    // distinct eigenvalues in descending-|value| order: 5 (alg 1), 2 (alg 2)
+    expect(e.algebraicMultiplicity).toEqual([1, 2]);
+    expect(e.geometricMultiplicity).toEqual([1, 2]);
+    expect(e.diagonalizable).toBe(true);
+  });
+});
+
+describe("eigen trace/determinant sanity (4×4, forces Hessenberg)", () => {
+  const A = make([
+    [4, 1, 0, 2],
+    [1, 3, 1, 0],
+    [0, 1, 2, 1],
+    [2, 0, 1, 1],
+  ]);
+  it("Σ Re(λ) ≈ trace and Π λ ≈ det", () => {
+    const e = eigen(A);
+    expect(e.converged).toBe(true);
+    const sumRe = e.values.reduce((sacc, z) => sacc + z.re, 0);
+    expect(sumRe).toBeCloseTo(trace(A), 8);
+    // product of all eigenvalues (complex) — its real part is det, imaginary part ≈ 0
+    let prodRe = 1;
+    let prodIm = 0;
+    for (const z of e.values) {
+      const nr = prodRe * z.re - prodIm * z.im;
+      const ni = prodRe * z.im + prodIm * z.re;
+      prodRe = nr;
+      prodIm = ni;
+    }
+    expect(prodRe).toBeCloseTo(determinant(A), 6);
+    expect(prodIm).toBeCloseTo(0, 6);
+  });
+});
+
+describe("eigen ordering, scalar & preconditions", () => {
+  it("values are sorted by descending |value|", () => {
+    const e = eigen(make([[6, -11, 6], [1, 0, 0], [0, 1, 0]]));
+    for (let i = 1; i < e.values.length; i++) {
+      expect(abs(e.values[i - 1])).toBeGreaterThanOrEqual(abs(e.values[i]) - 1e-9);
+    }
+  });
+
+  it("1×1 matrix returns the scalar as a real eigenvalue with eigenvector [±1]", () => {
+    const e = eigen(make([[42]]));
+    expect(e.values[0].re).toBeCloseTo(42, 12);
+    expect(e.values[0].im).toBeCloseTo(0, 12);
+    expect(e.vectors[0]).not.toBeNull();
+    if (e.vectors[0]) expect(Math.abs(e.vectors[0][0])).toBeCloseTo(1, 12);
+    expect(e.diagonalizable).toBe(true);
+  });
+
+  it("non-square throws RangeError", () => {
+    expect(() => eigen(make([[1, 2, 3], [4, 5, 6]]))).toThrow(RangeError);
   });
 });
