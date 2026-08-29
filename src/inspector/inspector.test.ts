@@ -1,0 +1,106 @@
+import { describe, it, expect } from "vitest";
+import { inspect, compare } from "./engine.ts";
+import type { InspectionResult } from "./types.ts";
+
+const propVal = (r: InspectionResult, section: string, label: string) =>
+  r.sections.find((s) => s.title.startsWith(section))?.properties.find((p) => p.label === label)?.value;
+
+describe("expression inspector", () => {
+  it("classifies a polynomial and reports degree + structure", () => {
+    const r = inspect({ kind: "expression", source: "x^2 + 3x + 2" });
+    expect(r.kind).toBe("expression");
+    expect(propVal(r, "Classification", "Class")).toBe("Polynomial, degree 2");
+    expect(propVal(r, "Structure", "Variables")).toBe("x");
+    expect(r.capabilities).toContain("derivative");
+    expect(r.capabilities).toContain("criticalPoints");
+  });
+
+  it("computes f′ and f″ symbolically", () => {
+    const r = inspect({ kind: "expression", source: "x^3" });
+    expect(propVal(r, "Calculus", "f′")).toBe("3·x^2");
+    expect(propVal(r, "Calculus", "f″")).toBe("6·x");
+  });
+
+  it("finds the critical point of x^2 − 4x and classifies it as a minimum", () => {
+    const r = inspect({ kind: "expression", source: "x^2 - 4x" });
+    const crit = r.sections.find((s) => s.title.startsWith("Roots"))!;
+    expect(crit.properties.some((p) => p.label.includes("x = 2") && p.value.includes("local minimum"))).toBe(true);
+  });
+
+  it("detects domain restrictions conservatively (heuristic)", () => {
+    const r = inspect({ kind: "expression", source: "sqrt(x) + 1/(x-2)" });
+    const dom = r.sections.find((s) => s.title === "Domain")!;
+    const vals = dom.properties.map((p) => p.value);
+    expect(vals).toContain("x ≥ 0");
+    expect(vals).toContain("x - 2 ≠ 0");
+    expect(dom.properties.every((p) => p.confidence === "heuristic")).toBe(true);
+  });
+
+  it("gives vector calculus for multivariable fields", () => {
+    const r = inspect({ kind: "expression", source: "x^2 + y^2" });
+    expect(r.identity).toContain("ℝ^2");
+    expect(r.capabilities).toContain("gradient");
+    expect(propVal(r, "Vector calculus", "∇²f (Laplacian)")).toBeDefined();
+  });
+
+  it("reports invalid expressions without throwing", () => {
+    const r = inspect({ kind: "expression", source: "x +" });
+    expect(r.identity).toBe("Invalid expression");
+    expect(r.warnings.length).toBeGreaterThan(0);
+  });
+});
+
+describe("matrix inspector", () => {
+  it("reports determinant, invertibility, symmetry, and capabilities", () => {
+    const r = inspect({ kind: "matrix", data: [[2, 0], [0, 3]] });
+    expect(propVal(r, "Invariants", "Determinant")).toBe("6");
+    expect(propVal(r, "Invariants", "Invertible")).toBe("yes");
+    expect(propVal(r, "Shape", "Symmetric")).toBe("yes");
+    expect(r.capabilities).toContain("inverse");
+  });
+  it("flags a singular matrix and withholds the inverse capability", () => {
+    const r = inspect({ kind: "matrix", data: [[1, 2], [2, 4]] });
+    expect(propVal(r, "Invariants", "Invertible")).toBe("no");
+    expect(r.capabilities).not.toContain("inverse");
+    expect(r.warnings.some((w) => w.includes("singular"))).toBe(true);
+  });
+  it("describes the 2×2 geometric action", () => {
+    const r = inspect({ kind: "matrix", data: [[0, -1], [1, 0]] }); // 90° rotation
+    const geo = r.sections.find((s) => s.title.startsWith("Geometric"))!;
+    expect(geo.properties.some((p) => p.value.includes("rotation"))).toBe(true);
+  });
+});
+
+describe("vector inspector", () => {
+  it("reports norm and unit vector", () => {
+    const r = inspect({ kind: "vector", data: [3, 4] });
+    expect(propVal(r, "Geometry", "Norm ‖v‖")).toBe("5");
+  });
+});
+
+describe("topology inspector", () => {
+  it("computes χ and genus from the mesh, labeling confidence", () => {
+    const r = inspect({ kind: "topology", surfaceId: "torus" });
+    expect(propVal(r, "Invariants", "Euler χ = V − E + F")).toBe("0");
+    const genusProp = r.sections.find((s) => s.title.startsWith("Invariants"))!.properties.find((p) => p.label.startsWith("Genus"))!;
+    expect(genusProp.value).toBe("1");
+    expect(genusProp.confidence).toBe("inferred"); // genus inferred, not exact
+  });
+});
+
+describe("comparison", () => {
+  it("topology: sphere vs torus cannot be homeomorphic (exact)", () => {
+    const c = compare({ kind: "topology", surfaceId: "sphere" }, { kind: "topology", surfaceId: "torus" })!;
+    expect(c.verdict).toContain("cannot be homeomorphic");
+    expect(c.confidence).toBe("exact");
+  });
+  it("expression: x^2+2x+1 vs (x+1)^2 → numerically equivalent, NOT proven symbolic", () => {
+    const c = compare({ kind: "expression", source: "x^2+2x+1" }, { kind: "expression", source: "(x+1)^2" })!;
+    expect(c.verdict).toContain("Numerically equivalent");
+    expect(c.confidence).toBe("estimated");
+  });
+  it("expression: x^2 vs x^3 not equivalent", () => {
+    const c = compare({ kind: "expression", source: "x^2" }, { kind: "expression", source: "x^3" })!;
+    expect(c.verdict).toContain("Not equivalent");
+  });
+});
