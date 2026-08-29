@@ -69,6 +69,38 @@ describe("matrix inspector", () => {
     const geo = r.sections.find((s) => s.title.startsWith("Geometric"))!;
     expect(geo.properties.some((p) => p.value.includes("rotation"))).toBe(true);
   });
+
+  it("reports eigenstructure, SVD, conditioning and subspaces for a diagonal matrix", () => {
+    const r = inspect({ kind: "matrix", data: [[2, 0], [0, 3]] });
+    expect(r.capabilities).toContain("eigen");
+    expect(propVal(r, "Eigenstructure", "λ1")).toBe("3"); // sorted by descending |λ|
+    expect(propVal(r, "Eigenstructure", "λ2")).toBe("2");
+    expect(propVal(r, "Conditioning", "Condition number κ₂")).toBe("1.5"); // 3/2
+    expect(propVal(r, "Subspaces", "Nullity (right)")).toBe("0");
+    expect(propVal(r, "Decompositions", "SVD")).toContain("3, 2"); // singular values
+  });
+
+  it("renders a complex conjugate eigenvalue pair for a rotation", () => {
+    const r = inspect({ kind: "matrix", data: [[0, -1], [1, 0]] });
+    const eig = r.sections.find((s) => s.title === "Eigenstructure")!;
+    expect(eig.properties.some((p) => p.value.includes("±") && p.value.includes("i"))).toBe(true);
+    expect(eig.properties.find((p) => p.label === "Diagonalizable")?.value).toBe("yes");
+  });
+
+  it("reports κ₂ = ∞ and SVD rank 1 for a singular matrix", () => {
+    const r = inspect({ kind: "matrix", data: [[1, 2], [2, 4]] });
+    expect(propVal(r, "Conditioning", "Condition number κ₂")).toBe("∞");
+    expect(propVal(r, "Conditioning", "Rank (SVD, condition-aware)")).toBe("1");
+    expect(r.warnings.some((w) => w.includes("singular") || w.includes("ill-conditioned"))).toBe(true);
+  });
+
+  it("skips spectral sections above the size cap with a warning", () => {
+    const n = 65;
+    const big = Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => (i === j ? 1 : 0)));
+    const r = inspect({ kind: "matrix", data: big });
+    expect(r.sections.some((s) => s.title === "Eigenstructure")).toBe(false);
+    expect(r.warnings.some((w) => w.includes("too large"))).toBe(true);
+  });
 });
 
 describe("vector inspector", () => {
