@@ -1,72 +1,160 @@
-# Fractal Lab
+# Mathematics Simulator
 
-WebGL fractal exploration laboratory. React + TS + Vite + Tailwind v4.
+An open-source spin-off project aimed at exploring mathematics — ranging from
+trigonometric functions in two-dimensional spaces to topology, fractal geometry,
+and many more features to come. The project is **under active development**; if
+you'd like to help, contributions are very welcome.
 
-```bash
-npm install
-npm run dev      # http://localhost:5173
-npm run build
-npm test
-```
+It is a single, coherent **mathematical exploration engine**: every workspace
+below shares one math core (lexer → parser → AST → evaluator, complex numbers,
+symbolic calculus, and an AST→GLSL compiler). No two engines, no `eval`.
 
-## Two modes (top nav)
+> **Live demo:** deployed on **Vercel** — continuously deployed from the `main`
+> branch. (No local backend; the whole app runs in the browser.)
 
-- **Calculator** — Desmos-style graphing. Multiple expression lines, per-line
-  color/visibility, auto-detected variable sliders. **2D** `y = f(x)` (Canvas2D,
-  pan/zoom, grid+axes, live trace of `f(x)` and `f'(x)`) and **3D**
-  `z = f(x,y)` (WebGL surface, drag-rotate, wheel-zoom, height+normal shading).
-  Both share the one math core below. Scene builder in `mathlab/graph/scene.ts`
-  (9 tests).
-- **Fractal Lab** — the GPU fractal explorer (below).
+---
+
+## Workspaces
+
+The top navigation switches between six workspaces:
+
+### 📈 Calculator — 2D & 3D graphing (Desmos-style)
+- **2D:** plot `y = f(x)`, multiple expressions with color + visibility, pan/zoom,
+  live trace of `f(x)` and `f'(x)`.
+- **Sliders:** any undefined variable becomes a slider; `min`/`max`/`step` accept
+  *expressions* (so a slider can be limited to a set, e.g. `{0, 2, …, n−1}`);
+  per-slider animation (loop / ping-pong).
+- **Analysis tools:** draggable locator, tangent line with **symbolic derivative**,
+  shaded definite **integral** (Simpson's rule).
+- **3D:** explicit surfaces `z = f(x, y)` and **implicit surfaces** `F(x, y, z) = 0`
+  (marching tetrahedra), multiple surfaces at once, bounding box + numbered axes,
+  probe point showing `f`, `∂f/∂x`, `∂f/∂y`, `‖∇f‖`, orbit camera + view presets.
+
+### 🌀 Fractal Lab — GPU escape-time fractals
+- Mandelbrot, Julia (pick-from-Mandelbrot), Burning Ship, Tricorn, Celtic,
+  Buffalo, Newton.
+- Generalised exponent `z^p + c` (incl. decimals), smooth coloring, 6 palettes.
+- **Deep zoom** via emulated double precision (double-single, df64).
+- **Custom `f(z,c)`** and **Complex `f(z)` domain coloring** — your typed
+  expression is compiled through the shared parser into a GPU shader.
+- Parameter animation, PNG + config JSON export.
+
+### 🧭 Bloch Sphere — single-qubit simulator
+- Gates X, Y, Z, H, S, S†, T, T† and Rx/Ry/Rz rotations.
+- **Drive pulses** (Rabi Ω, detuning Δ, phase φ, duration t) with a live preview
+  of the effective rotation axis + ghost arc before applying.
+- State trajectory, arrow animation, `|ψ⟩` / θ,φ readout, and **measurement
+  probability bars** in the X/Y/Z bases.
+
+### 🧊 4D — polytopes & parametric surfaces
+- Tesseract, 5-cell, 16-cell, 24-cell, and parametric surfaces `(u,v) → ℝ⁴`
+  (Clifford torus, Hopf fibration, …) typed with the shared parser.
+- Rotation in all **six 4-space planes**, perspective projection `d/(d−w)`, and
+  the 4th dimension mapped to **color**. Auto double-rotation.
+
+### 🍩 Topology — homeomorphisms & deformation
+- Everyday objects grouped by **genus** (ball, egg, plate, bowl, vase, cup…;
+  donut, mug, teacup, ring, bagel, CD…).
+- **Continuous morph** between same-genus shapes (mug ↔ donut, cup ↔ ball) — the
+  panel verifies homeomorphism via genus / Euler characteristic `χ = 2 − 2g`.
+- **Grab & deform:** pull the surface, inflate, twist, random deform — all
+  topology-preserving. Spin in space, wireframe, color modes.
+
+### 📖 Docs — built-in manual
+- Bilingual (English / Español) manual explaining every workspace and its
+  underlying mathematics, with formulas typeset by **KaTeX**.
+
+---
 
 ## Shared math core (`src/mathlab/`)
 
-One parser/AST feeds both the calculator and the fractal engine — no duplicate
-math engines.
+The correctness-critical layer, unit-tested (112 tests total):
 
-- `core/` — `lexer` → `parser` → `ast`, real `eval` (whitelisted functions, **no
-  `eval`/`Function`**), `simplify`, `print`, and `complexGlsl` (AST → GLSL complex
-  arithmetic).
+- `core/` — `lexer` → `parser` → `ast`, real `eval` (whitelisted functions,
+  **never `eval`/`Function`**), `simplify`, `print`, and `complexGlsl`
+  (AST → GLSL complex arithmetic).
 - `calculus/derivative` — symbolic differentiation (chain/product/quotient/power).
-- `analysis/roots` — bracketing + bisection, Newton iteration.
+- `analysis/` — numeric `roots` (bisection + Newton) and `integrate` (Simpson).
+- `graph/scene` — turns expression lines into functions, sliders, and plots.
 
-**Function ↔ fractal bridge:** the *Custom f(z,c)* and *Complex f(z)* fractals
-compile a typed expression through this same core into a GPU shader
-(`webgl/customShader.ts`). Type `z^2 + c`, `sin(z) + c`, `z^2 + conjugate(c)`,
-`exp(z)`, `z^p + c` (p = exponent slider) and it renders live; the sidebar shows
-the symbolic `∂/∂z` from the same AST. `Complex f(z)` renders domain coloring.
-26 unit tests cover parser, evaluator, derivative, roots, and the GLSL compiler.
+The same parsed AST feeds the graphing calculator **and** the fractal shaders —
+that is the core design principle.
 
-## Architecture
+---
 
-- `src/fractals/` — fractal registry. Add a fractal = one entry in `registry.ts`
-  + a branch in the shader (`shaderType`). No other file changes.
-- `src/webgl/` — `shaders.ts` (escape-time GLSL, generalised `z^p + c`) and
-  `Renderer.ts` (WebGL1, uniform upload, single full-screen draw).
-- `src/store.ts` — zustand state: active fractal, params, viewport, color,
-  config export/import. Pure viewport math (`zoomAt`) is unit-tested.
-- `src/components/` — `FractalCanvas` (render loop + pointer interaction),
-  `Sidebar` (selector/params/color), `Topbar` (stats/export), `StatusBar`
-  (viewport readout + float32 precision warning).
+## Tech stack
 
-## Status
+- **React 19** + **TypeScript** (strict) + **Vite 7**
+- **TailwindCSS v4**
+- **WebGL** for fractals, 3D surfaces, the Bloch sphere, and 4D rendering
+- **zustand** for state
+- **KaTeX** for typeset math (lazy-loaded)
+- **Vitest** for tests
+- Deployed on **Vercel**
 
-7 fractals: Mandelbrot · Julia · Burning Ship · Tricorn · Celtic · Buffalo ·
-Newton (basins of z^n−1). Variable exponent `p` (incl. decimals) ·
-cursor-centered wheel zoom · drag pan · iterations · escape radius · 6 palettes
-(density/offset/invert) · smooth coloring · Julia-from-click · PNG export ·
-config JSON save/load · FPS + render-ms readout.
+---
 
-**Animate panel** — sweep any parameter to watch the fractal morph: pick param,
-range, speed (sweeps/sec), step count (0 = smooth), mode (loop / ping-pong /
-once), play/pause. The parameter slider tracks the live value.
+## Project structure
 
-Rendering is GPU escape-time (WebGL1, `highp float` = 32-bit). Deep zoom is
-capped by float32 (~`span 5e-5`, warned in the status bar). Lifting it (WebGL2
-f64-emulation / perturbation reference orbits) is Phase 4.
+```
+src/
+  mathlab/            shared math core (lexer, parser, AST, eval, calculus, analysis)
+  fractals/           fractal registry + types
+  webgl/              WebGL renderer + AST→GLSL custom-shader builder
+  graph/              graphing state + slider config
+  bloch/              qubit math + state
+  fourd/              4D vectors, polytopes, parametric surfaces
+  topo/               topology surfaces + mesh + morph
+  components/         React UI per workspace (graph, bloch, fourd, topo, docs, …)
+  App.tsx             top-level workspace switcher
+```
 
-## Next (not built)
+---
 
-- Phase 2: Newton fractal, domain coloring, iteration inspector, comparison view, presets.
-- Phase 3: Sierpinski / Koch / Barnsley (IFS + Canvas2D), transform lab.
-- Phase 4: custom formula parser (AST, no `eval`), animation timeline, box-counting dimension, deep-zoom precision engine.
+## Getting started
+
+```bash
+git clone https://github.com/Max-arango/Mathematics-Simulator.git
+cd Mathematics-Simulator
+npm install
+npm run dev        # http://localhost:5173
+```
+
+Other scripts:
+
+```bash
+npm run build      # type-check + production build (outputs to dist/)
+npm run preview    # preview the production build
+npm test           # run the test suite (Vitest)
+```
+
+Requires a modern browser with **WebGL**.
+
+---
+
+## Deployment
+
+The app is a fully static single-page application (no backend) and is deployed
+on **Vercel** with continuous deployment from `main`:
+
+- Build command: `npm run build`
+- Output directory: `dist`
+
+Any push to `main` triggers a new deployment.
+
+---
+
+## Contributing
+
+The project is under development and help is welcome — new fractals, surfaces,
+calculator tools, or fixes. A good contribution:
+
+1. Keeps the **shared math core** shared (no duplicate parsers/engines).
+2. Adds a **test** for non-trivial math (`npm test` must stay green).
+3. Uses no `eval` / `new Function` — everything goes through the parser/AST.
+
+Fork, branch, and open a pull request.
+
+## License
+
+Released under the [MIT License](LICENSE).

@@ -1,8 +1,9 @@
 {
-  "name": "fractal-lab",
+  "name": "mathematics-simulator",
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "license": "MIT",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
