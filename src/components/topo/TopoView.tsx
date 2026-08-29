@@ -1,12 +1,15 @@
 import { TopoSurface } from "./TopoSurface.tsx";
 import { useTopo } from "../../topo/topoStore.ts";
-import { SURFACES, SURFACE_BY_ID, eulerChar, homeomorphic } from "../../topo/surfaces.ts";
+import { SURFACES, SURFACE_BY_ID } from "../../topo/surfaces.ts";
+import { homeomorphicSurfaces, classifySurface } from "../../topo/topology.ts";
 
 export function TopoView() {
   const s = useTopo();
   const src = SURFACE_BY_ID[s.sourceId];
   const dst = SURFACE_BY_ID[s.targetId];
-  const homeo = homeomorphic(src, dst);
+  const verdict = homeomorphicSurfaces(s.sourceId, s.targetId);
+  const homeo = verdict.homeomorphic;
+  const inv = classifySurface(s.sourceId);
 
   const sel = "w-full rounded bg-slate-800/80 px-2 py-1.5 text-sm text-slate-200 outline-none focus:ring-1 focus:ring-cyan-400";
 
@@ -20,7 +23,7 @@ export function TopoView() {
           </select>
         </Section>
 
-        <Section title="Homeomorphism (morph →)">
+        <Section title="Isotopy visualization (morph →)">
           <div className="mb-2 flex flex-wrap gap-1">
             {[
               ["Mug ↔ Donut", "torus", "mug"],
@@ -38,8 +41,8 @@ export function TopoView() {
 
           <div className={`mt-2 rounded px-2 py-1.5 text-xs ${homeo ? "bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-400/30" : "bg-red-500/10 text-red-300 ring-1 ring-red-400/30"}`}>
             {homeo
-              ? "✓ Homeomorphic — same genus, so one deforms into the other with no tearing."
-              : "✗ Not homeomorphic — different genus. Would require tearing or gluing a hole."}
+              ? "✓ Homeomorphic — verified: same Euler characteristic χ (computed from the mesh), so by the classification theorem of closed surfaces one is a continuous deformation of the other."
+              : "✗ Not homeomorphic — computed invariants differ (χ_a ≠ χ_b): no homeomorphism exists (would require tearing/gluing)."}
           </div>
 
           {homeo && (
@@ -49,6 +52,7 @@ export function TopoView() {
                 <span className="tabular-nums text-cyan-200">{s.t.toFixed(2)}</span>
               </div>
               <input type="range" className="w-full" min={0} max={1} step={0.01} value={s.t} onChange={(e) => s.setT(Number(e.target.value))} />
+              <p className="mt-1 text-[10px] text-slate-600">The animation is a visual homotopy/isotopy — NOT the proof. The proof is the equality of the computed invariants below.</p>
               <div className="mt-1 flex items-center gap-2">
                 <button onClick={s.togglePlay} className={`flex-1 rounded py-1.5 text-xs font-medium ${s.playing ? "bg-fuchsia-500/20 text-fuchsia-200 ring-1 ring-fuchsia-400/50" : "bg-cyan-500/15 text-cyan-200"}`}>
                   {s.playing ? "❚❚ Pause" : "▶ Morph"}
@@ -59,15 +63,19 @@ export function TopoView() {
           )}
         </Section>
 
-        <Section title="Invariants">
+        <Section title="Invariants (computed from mesh)">
           <table className="w-full text-xs">
             <tbody className="[&_td]:py-0.5 [&_td]:tabular-nums">
-              <tr><td className="text-slate-400">genus (holes)</td><td className="text-right text-cyan-200">{src.genus}</td></tr>
-              <tr><td className="text-slate-400">Euler χ = 2 − 2g</td><td className="text-right text-cyan-200">{eulerChar(src.genus)}</td></tr>
-              <tr><td className="text-slate-400">orientable</td><td className="text-right text-cyan-200">yes</td></tr>
+              <tr><td className="text-slate-400">V (vertices)</td><td className="text-right text-cyan-200">{inv.V}</td></tr>
+              <tr><td className="text-slate-400">E (edges)</td><td className="text-right text-cyan-200">{inv.E}</td></tr>
+              <tr><td className="text-slate-400">F (faces)</td><td className="text-right text-cyan-200">{inv.F}</td></tr>
+              <tr><td className="text-slate-400">Euler χ = V − E + F</td><td className="text-right text-cyan-200">{inv.euler}</td></tr>
+              <tr><td className="text-slate-400">genus g = (2 − χ)/2</td><td className="text-right text-cyan-200">{inv.genus ?? "—"}</td></tr>
+              <tr><td className="text-slate-400">components</td><td className="text-right text-cyan-200">{inv.components}</td></tr>
+              <tr><td className="text-slate-400">closed manifold</td><td className="text-right text-cyan-200">{inv.closedManifold ? "yes" : "no"}</td></tr>
             </tbody>
           </table>
-          <p className="mt-1.5 text-[10px] text-slate-600">Homeomorphic ⇔ same genus ⇔ same χ (closed orientable surfaces).</p>
+          <p className="mt-1.5 text-[10px] text-slate-600">Homeomorphic ⇔ same χ (closed connected orientable surfaces).</p>
         </Section>
 
         <Section title="Grab & deform">
@@ -113,7 +121,7 @@ export function TopoView() {
       <main className="relative min-w-0 flex-1">
         <TopoSurface />
         <div className="pointer-events-none absolute bottom-2 left-2 rounded bg-black/60 px-3 py-1.5 font-mono text-[11px] text-slate-400">
-          {src.label} {homeo && dst.id !== src.id ? `→ ${dst.label}` : ""} · genus {src.genus} · χ = {eulerChar(src.genus)} · {s.mode} · drag {s.mode === "deform" ? "to pull" : "to rotate"}
+          {src.label} {homeo && dst.id !== src.id ? `→ ${dst.label}` : ""} · genus {inv.genus ?? "—"} · χ = {inv.euler} · {s.mode} · drag {s.mode === "deform" ? "to pull" : "to rotate"}
         </div>
       </main>
     </div>

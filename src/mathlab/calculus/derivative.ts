@@ -19,6 +19,10 @@ function fnDeriv(name: string, u: Node): Node {
     case "asin": return div(num(1), call("sqrt", [sub(num(1), pow(u, num(2)))]));
     case "acos": return neg(div(num(1), call("sqrt", [sub(num(1), pow(u, num(2)))])));
     case "atan": return div(num(1), add(num(1), pow(u, num(2))));
+    case "sec": return mul(call("sec", [u]), call("tan", [u]));                 // sec·tan
+    case "csc": return neg(mul(call("csc", [u]), call("cot", [u])));            // −csc·cot
+    case "cot": return neg(div(num(1), pow(call("sin", [u]), num(2))));         // −csc² = −1/sin²
+    case "cbrt": return div(num(1), mul(num(3), pow(call("cbrt", [u]), num(2)))); // 1/(3·cbrt(u)²)
     case "abs": return call("sign", [u]);
     case "sign": return num(0);
     default: throw new Error(`No symbolic derivative for '${name}'`);

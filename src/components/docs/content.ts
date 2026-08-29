@@ -240,6 +240,63 @@ z &= |\alpha|^{2} - |\beta|^{2} = \cos\theta
     ],
   },
   {
+    id: "topology",
+    title: { en: "Topology", es: "Topología" },
+    blocks: [
+      p(
+        "The topology workspace shows triangulated CLOSED 2-manifolds (surfaces with no boundary, like a sphere or a donut) and lets you continuously deform one into another. Each object is a parametric surface sampled on a (u, v) grid and welded at its seams and poles.",
+        "El espacio de topología muestra 2-variedades CERRADAS trianguladas (superficies sin borde, como una esfera o una dona) y permite deformar una en otra de forma continua. Cada objeto es una superficie paramétrica muestreada en una malla (u, v) y soldada en sus costuras y polos.",
+      ),
+      h("Homeomorphism", "Homeomorfismo"),
+      p(
+        "Two spaces are homeomorphic when there is a bijection f that is continuous and whose inverse is also continuous. Continuity is the GENERAL topological definition: the preimage of every open set is open — not an epsilon-delta test.",
+        "Dos espacios son homeomorfos cuando existe una biyección f continua cuya inversa también es continua. La continuidad es la definición topológica GENERAL: la preimagen de todo abierto es abierta — no un test épsilon-delta.",
+      ),
+      h("Exact vs numeric verification", "Verificación exacta vs numérica"),
+      p(
+        "For FINITE spaces the app verifies homeomorphism EXACTLY and exhaustively (finiteSpace.ts): it checks bijectivity and that the preimage of every open set is open, with no floating point. For the SURFACES, it uses the classification theorem: two closed, connected, orientable surfaces are homeomorphic iff they share the same Euler characteristic χ, which is COMPUTED from the mesh (V − E + F) rather than declared.",
+        "Para espacios FINITOS la app verifica el homeomorfismo de forma EXACTA y exhaustiva (finiteSpace.ts): comprueba biyectividad y que la preimagen de todo abierto sea abierta, sin coma flotante. Para las SUPERFICIES usa el teorema de clasificación: dos superficies cerradas, conexas y orientables son homeomorfas sii comparten la misma característica de Euler χ, que se CALCULA de la malla (V − E + F) en vez de declararse.",
+      ),
+      math(String.raw`\chi = V - E + F, \qquad g = \frac{2 - \chi}{2}`),
+      h("The morph is a visualization", "El morph es una visualización"),
+      p(
+        "The animated deformation (morph slider) is a visual homotopy/isotopy — it illustrates the equivalence but is NOT the proof. The proof is the equality of the computed invariants shown in the panel.",
+        "La deformación animada (slider de morph) es una homotopía/isotopía visual — ilustra la equivalencia pero NO es la demostración. La demostración es la igualdad de los invariantes calculados que se muestran en el panel.",
+      ),
+      h("Limitation", "Limitación"),
+      p(
+        "General continuous-map homeomorphism on ℝⁿ (e.g. showing x ↦ x³ is a homeomorphism of ℝ) is NOT verified here — that is undecidable in general without symbolic analysis. Only finite spaces (exact) and closed orientable surfaces (via χ) are decided.",
+        "El homeomorfismo por mapa continuo general en ℝⁿ (p. ej. mostrar que x ↦ x³ es un homeomorfismo de ℝ) NO se verifica aquí — es indecidible en general sin análisis simbólico. Solo se deciden espacios finitos (exacto) y superficies cerradas orientables (vía χ).",
+      ),
+    ],
+  },
+  {
+    id: "kernel",
+    title: { en: "Math kernel", es: "Núcleo matemático" },
+    blocks: [
+      p(
+        "All workspaces sit on one shared kernel. Phase I added first-class complex scalars, vectors and matrices, vector calculus (gradient / Hessian / Jacobian / Laplacian), numerical limits, adaptive integration, a small symbolic integrator, and Taylor expansion — every result labels itself as EXACT (symbolic) or an APPROXIMATION (numerical, with error metadata).",
+        "Todos los espacios se apoyan en un único núcleo. La Fase I añadió escalares complejos, vectores y matrices de primera clase, cálculo vectorial (gradiente / Hessiano / Jacobiano / Laplaciano), límites numéricos, integración adaptativa, un integrador simbólico acotado y expansión de Taylor — cada resultado se etiqueta como EXACTO (simbólico) o APROXIMACIÓN (numérico, con metadatos de error).",
+      ),
+      h("Differential operators", "Operadores diferenciales"),
+      math(String.raw`\nabla f = \Big(\tfrac{\partial f}{\partial x_1},\dots,\tfrac{\partial f}{\partial x_n}\Big),\quad H_{ij}=\tfrac{\partial^2 f}{\partial x_i\partial x_j},\quad J_{ij}=\tfrac{\partial f_i}{\partial x_j},\quad \nabla^2 f=\sum_i \tfrac{\partial^2 f}{\partial x_i^2}`),
+      p(
+        "These are symbolic (via the shared derivative engine) and also evaluate numerically; symbolic results are cross-validated against finite differences in the test suite.",
+        "Son simbólicos (vía el motor de derivadas compartido) y también evalúan numéricamente; los resultados simbólicos se cross-validan contra diferencias finitas en la suite de tests.",
+      ),
+      h("Linear algebra", "Álgebra lineal"),
+      p(
+        "Matrix determinant, inverse, rank and linear solving use LU decomposition with partial pivoting (floating-point numerical operations, not exact symbolic). Vectors support dot, cross (ℝ³), norm, projection.",
+        "Determinante, inversa, rango y resolución de sistemas usan descomposición LU con pivoteo parcial (operaciones numéricas en punto flotante, no simbólicas exactas). Los vectores soportan producto punto, cruz (ℝ³), norma, proyección.",
+      ),
+      h("Mathematical honesty", "Honestidad matemática"),
+      ul(
+        ["Numerical limit / integral / root results are approximations with error metadata — never presented as proofs.", "Symbolic integration covers a small SOUND subset (linearity, powers, sin/cos/exp of the bare variable, 1/x); anything else returns 'unsupported' rather than a wrong answer.", "Complex log / sqrt / inverse-trig use principal branches.", "General ℝⁿ homeomorphism and closed-form limits are not attempted — a numerical estimate is labeled as such."],
+        ["Los resultados numéricos de límite / integral / raíz son aproximaciones con metadatos de error — nunca se presentan como pruebas.", "La integración simbólica cubre un subconjunto pequeño y correcto (linealidad, potencias, sin/cos/exp de la variable, 1/x); lo demás devuelve 'unsupported' en vez de una respuesta errónea.", "log / sqrt / trig inversas complejas usan ramas principales.", "No se intenta homeomorfismo general en ℝⁿ ni límites en forma cerrada — una estimación numérica se etiqueta como tal."],
+      ),
+    ],
+  },
+  {
     id: "safety",
     title: { en: "Notes & limits", es: "Notas y límites" },
     blocks: [

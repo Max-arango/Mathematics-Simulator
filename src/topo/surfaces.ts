@@ -1,8 +1,8 @@
-// Parametric closed surfaces grouped by genus (number of holes). Two surfaces
-// are homeomorphic iff they share the same genus g (equivalently Euler
-// characteristic χ = 2 − 2g for closed orientable surfaces). We demonstrate the
-// homeomorphism by continuously interpolating one embedding into another over a
-// shared parameter domain — no tearing, no gluing.
+// Parametric closed surfaces grouped by genus (number of holes). `genus` here is
+// a DECLARED label, NOT the source of truth for the homeomorphism verdict: it is
+// VERIFIED against invariants computed from the actual mesh geometry in
+// topology.test.ts, and the runtime verdict is computed in topology.ts via the
+// classification theorem. The morph in the UI is a visual isotopy, not a proof.
 
 export type Vec3 = [number, number, number];
 export type Domain = "sphere" | "torus";
@@ -134,7 +134,10 @@ export const SURFACES: Surface[] = [
 
 export const SURFACE_BY_ID = Object.fromEntries(SURFACES.map((s) => [s.id, s]));
 
-/** Euler characteristic of a closed orientable surface of the given genus. */
+/** Euler characteristic from the declared genus. The AUTHORITATIVE χ is computed
+ *  from the mesh in invariants.ts (V − E + F); this is the closed-form label. */
 export const eulerChar = (genus: number) => 2 - 2 * genus;
 
+/** Declared-label homeomorphism (same genus). The computed verdict lives in
+ *  topology.ts (homeomorphicSurfaces); this remains only for the label test. */
 export const homeomorphic = (a: Surface, b: Surface) => a.genus === b.genus;
