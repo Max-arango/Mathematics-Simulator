@@ -12,6 +12,7 @@ import { useStore, type AppMode } from "./store.ts";
 // KaTeX-heavy views are lazy-loaded to keep the initial bundle lean.
 const DocsView = lazy(() => import("./components/docs/DocsView.tsx").then((m) => ({ default: m.DocsView })));
 const InspectorView = lazy(() => import("./components/inspector/InspectorView.tsx").then((m) => ({ default: m.InspectorView })));
+const NotebookView = lazy(() => import("./components/notebook/NotebookView.tsx").then((m) => ({ default: m.NotebookView })));
 
 /** Drives parameter animation; animTick no-ops (no set) while paused. */
 function useAnimDriver() {
@@ -39,6 +40,7 @@ function ModeNav() {
     { id: "fourd", label: "4D" },
     { id: "topo", label: "Topology" },
     { id: "inspector", label: "Inspector" },
+    { id: "notebook", label: "Notebook" },
     { id: "docs", label: "Docs" },
   ];
   return (
@@ -82,6 +84,10 @@ export function App() {
       ) : appMode === "inspector" ? (
         <Suspense fallback={<div className="p-8 text-sm text-slate-500">Loading…</div>}>
           <InspectorView />
+        </Suspense>
+      ) : appMode === "notebook" ? (
+        <Suspense fallback={<div className="p-8 text-sm text-slate-500">Loading…</div>}>
+          <NotebookView />
         </Suspense>
       ) : appMode === "docs" ? (
         <Suspense fallback={<div className="p-8 text-sm text-slate-500">Loading…</div>}>
