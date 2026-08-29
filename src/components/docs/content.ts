@@ -271,6 +271,25 @@ z &= |\alpha|^{2} - |\beta|^{2} = \cos\theta
     ],
   },
   {
+    id: "inspector",
+    title: { en: "Inspector", es: "Inspector" },
+    blocks: [
+      p(
+        "The Inspector is a microscope for mathematical objects. Pick an object — an expression, a matrix, a vector, or a topological surface — and it reports its structure, properties, calculus, and invariants, with each value tagged by how it was obtained.",
+        "El Inspector es un microscopio para objetos matemáticos. Elige un objeto — una expresión, una matriz, un vector o una superficie topológica — y reporta su estructura, propiedades, cálculo e invariantes, con cada valor etiquetado según cómo se obtuvo.",
+      ),
+      ul(
+        ["Expression: AST structure, polynomial degree, conservative domain restrictions, f′/f″, gradient/Hessian/Laplacian, numeric roots and critical points classified by f″.", "Matrix: determinant, rank, invertibility, symmetry, and the 2×2 geometric action; related transpose/inverse.", "Vector: norm and unit direction. Topology: V, E, F, χ, components, orientability and genus computed from the mesh.", "Compare mode, capability chips, navigable related objects, and an assumptions/limits list."],
+        ["Expresión: estructura del AST, grado polinómico, restricciones de dominio conservadoras, f′/f″, gradiente/Hessiano/Laplaciano, raíces numéricas y puntos críticos clasificados por f″.", "Matriz: determinante, rango, invertibilidad, simetría y acción geométrica 2×2; transpuesta/inversa relacionadas.", "Vector: norma y dirección unitaria. Topología: V, E, F, χ, componentes, orientabilidad y género calculados de la malla.", "Modo comparar, chips de capacidad, objetos relacionados navegables y lista de supuestos/límites."],
+      ),
+      h("Confidence labels", "Etiquetas de confianza"),
+      p(
+        "Every value declares its epistemic status: exact (integers/closed form), symbolic, numerical, estimated (sampled), inferred (under stated assumptions), heuristic, or unsupported. A numerical estimate is never shown as a proof; symbolic equivalence is never claimed from numerical sampling alone.",
+        "Cada valor declara su estatus: exact (enteros/forma cerrada), symbolic, numerical, estimated (muestreado), inferred (bajo supuestos declarados), heuristic o unsupported. Una estimación numérica nunca se muestra como prueba; nunca se afirma equivalencia simbólica solo por muestreo numérico.",
+      ),
+    ],
+  },
+  {
     id: "kernel",
     title: { en: "Math kernel", es: "Núcleo matemático" },
     blocks: [
