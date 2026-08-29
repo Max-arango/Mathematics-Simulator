@@ -9,8 +9,9 @@ It is a single, coherent **mathematical exploration engine**: every workspace
 below shares one math core (lexer → parser → AST → evaluator, complex numbers,
 symbolic calculus, and an AST→GLSL compiler). No two engines, no `eval`.
 
-> **Live demo:** deployed on **Vercel** — continuously deployed from the `main`
-> branch. (No local backend; the whole app runs in the browser.)
+> **🔗 Live demo: [mathematics-simulator.vercel.app](https://mathematics-simulator.vercel.app)**
+> — deployed on Vercel, continuously deployed from the `main` branch. No local
+> backend; the whole app runs in the browser.
 
 ---
 
