@@ -271,6 +271,25 @@ z &= |\alpha|^{2} - |\beta|^{2} = \cos\theta
     ],
   },
   {
+    id: "notebook",
+    title: { en: "Notebook / Experiments", es: "Notebook / Experimentos" },
+    blocks: [
+      p(
+        "The Notebook turns exploration into a reproducible document. An experiment is a sequence of cells — text, parameters, expressions, and analyses — whose outputs are derived deterministically from the cell source. Save it, reload it, and it reconstructs exactly.",
+        "El Notebook convierte la exploración en un documento reproducible. Un experimento es una secuencia de celdas — texto, parámetros, expresiones y análisis — cuyos resultados se derivan de forma determinista del texto de la celda. Guárdalo, recárgalo, y se reconstruye idéntico.",
+      ),
+      ul(
+        ["Expression cells define named objects (e.g. f = a·x² − 4). Analysis cells inspect them (derivatives, roots, critical points, gradient/Hessian).", "Parameters propagate through a dependency graph: change a and every downstream analysis recomputes.", "Undo/redo (slider drags coalesced), snapshots, localStorage autosave, and import/export as .mathsim.json.", "Bundled example experiments double as regression fixtures."],
+        ["Las celdas de expresión definen objetos con nombre (p. ej. f = a·x² − 4). Las de análisis los inspeccionan (derivadas, raíces, puntos críticos, gradiente/Hessiano).", "Los parámetros propagan por un grafo de dependencias: cambia a y todo análisis aguas abajo se recalcula.", "Undo/redo (arrastres de slider agrupados), snapshots, autoguardado en localStorage e import/export como .mathsim.json.", "Los experimentos de ejemplo sirven también de fixtures de regresión."],
+      ),
+      h("Reproducible & safe", "Reproducible y seguro"),
+      p(
+        "The canonical data is the source, never rendered output; caches can be discarded and regenerated. Experiment files are untrusted input: parsed as declarative JSON, schema-validated with resource limits, with no eval / new Function — malformed files fail with structured errors instead of crashing or executing anything.",
+        "El dato canónico es el texto fuente, nunca el resultado renderizado; los cachés se pueden descartar y regenerar. Los archivos de experimento son input no confiable: se parsean como JSON declarativo, se validan contra esquema con límites de recursos, sin eval / new Function — los archivos malformados fallan con errores estructurados en vez de crashear o ejecutar nada.",
+      ),
+    ],
+  },
+  {
     id: "inspector",
     title: { en: "Inspector", es: "Inspector" },
     blocks: [
