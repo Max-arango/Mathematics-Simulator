@@ -2,7 +2,12 @@
 // Every value carries a `confidence` so exact/symbolic results are never confused
 // with numerical estimates or heuristic inferences.
 
-export type MathKind = "expression" | "matrix" | "vector" | "topology";
+// The four core object kinds plus an open string tail: domain inspectors (dynamical
+// systems, …) register additional kinds through the registry (engine.ts / registry.ts)
+// without editing this alias. `(string & {})` keeps the four literals visible to
+// autocomplete while accepting any registered kind, so `InspectionResult.kind` typechecks
+// for a domain result the core union does not yet name.
+export type MathKind = "expression" | "matrix" | "vector" | "topology" | (string & {});
 
 export type Confidence =
   | "exact"        // integer / closed-form, provably correct

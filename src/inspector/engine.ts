@@ -1,4 +1,5 @@
-import { type MathObject, type InspectionResult, type Confidence } from "./types.ts";
+import { type MathObject, type MathKind, type InspectionResult, type Confidence } from "./types.ts";
+import { registerInspector, getInspector } from "./registry.ts";
 import { inspectExpression } from "./inspect/expression.ts";
 import { inspectMatrix } from "./inspect/matrix.ts";
 import { inspectVector } from "./inspect/vector.ts";
@@ -8,14 +9,27 @@ import { parse } from "../mathlab/core/parser.ts";
 import { compile1 } from "../mathlab/core/eval.ts";
 import { freeVars } from "../mathlab/core/ast.ts";
 
-/** Inspect any supported mathematical object. Pure, React-free. */
+// The four core inspectors, registered once at module load. inspect() dispatches through the
+// registry (registry.ts), so adding a domain is a registerInspector call in its own module —
+// no change here. Each wrapper unwraps its own variant; the mismatch branch is unreachable
+// via inspect() (which dispatches by kind) but keeps the wrapper type-safe without a cast.
+registerInspector("expression", (o) => (o.kind === "expression" ? inspectExpression(o.source) : unsupported(o.kind, "kind mismatch")));
+registerInspector("matrix", (o) => (o.kind === "matrix" ? inspectMatrix(o.data) : unsupported(o.kind, "kind mismatch")));
+registerInspector("vector", (o) => (o.kind === "vector" ? inspectVector(o.data) : unsupported(o.kind, "kind mismatch")));
+registerInspector("topology", (o) => (o.kind === "topology" ? inspectTopology(o.surfaceId) : unsupported(o.kind, "kind mismatch")));
+
+/** Inspect any registered mathematical object. Pure, React-free. Dispatches via the registry;
+ *  an unregistered kind degrades to a graceful "unsupported" result instead of throwing. */
 export function inspect(obj: MathObject): InspectionResult {
-  switch (obj.kind) {
-    case "expression": return inspectExpression(obj.source);
-    case "matrix": return inspectMatrix(obj.data);
-    case "vector": return inspectVector(obj.data);
-    case "topology": return inspectTopology(obj.surfaceId);
-  }
+  const fn = getInspector(obj.kind);
+  if (!fn) return unsupported(obj.kind, `No inspector is registered for kind "${obj.kind}".`);
+  return fn(obj);
+}
+
+// Graceful result for an unknown/unregistered kind — never throws, flags the gap as a warning
+// so a deserialized document with an unfamiliar kind degrades instead of crashing the UI.
+function unsupported(kind: MathKind, message: string): InspectionResult {
+  return { kind, identity: `Unsupported object kind "${kind}"`, sections: [], relations: [], capabilities: [], warnings: [message] };
 }
 
 export interface ComparisonRow { label: string; a: string; b: string; same: boolean }
