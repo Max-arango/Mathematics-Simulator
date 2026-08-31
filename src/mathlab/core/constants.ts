@@ -10,6 +10,10 @@ export const MAX_ODE_STEPS = 1_000_000; // hard cap on ODE integration steps. A 
                                         // more terminates gracefully (termination:"max-steps", converged:false,
                                         // + warning) rather than looping forever; but a caller REQUESTING more
                                         // steps up front is rejected with ResourceLimitError (bad input, not a run).
+export const MAX_GRID = 2048;           // per-axis cap on PDE discretisation points (nx, ny). A finite-difference
+                                        // solver allocates O(points) per axis and, for time-marching schemes, stores
+                                        // the whole space-time grid; the pde subsystem uses this to reject grids that
+                                        // would exhaust memory up front (ResourceLimitError) instead of thrashing.
 
 /** |a − b| within absolute tolerance. */
 export const nearlyEqual = (a: number, b: number, tol = ABS_TOL): boolean => Math.abs(a - b) <= tol;
