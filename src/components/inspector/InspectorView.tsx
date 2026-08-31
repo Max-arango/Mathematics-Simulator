@@ -34,7 +34,9 @@ function PropRow({ p }: { p: Property }) {
   );
 }
 
-type Kind = MathObject["kind"];
+// The kinds this UI offers an input form for. A subset of MathObject["kind"]: newer domain
+// kinds (e.g. dynamicalSystem) are inspectable through the engine but have no input panel yet.
+type Kind = "expression" | "matrix" | "vector" | "topology";
 
 function parseMatrix(text: string): number[][] {
   return text.trim().split("\n").map((row) => row.trim().split(/[\s,]+/).map(Number));

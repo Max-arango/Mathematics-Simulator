@@ -42,7 +42,9 @@ export interface Relation {
 export type Capability =
   | "derivative" | "gradient" | "hessian" | "laplacian" | "roots"
   | "criticalPoints" | "graph" | "determinant" | "inverse" | "eigen"
-  | "geometricAction" | "topologyInvariants" | "compare";
+  | "geometricAction" | "topologyInvariants" | "compare"
+  // Dynamical-system domain.
+  | "equilibria" | "stability" | "vectorField";
 
 export interface InspectionResult {
   kind: MathKind;
@@ -54,12 +56,15 @@ export interface InspectionResult {
   warnings: string[];
 }
 
-/** The inputs the Inspector understands. Discriminated — no `any`. */
+/** The inputs the Inspector understands. Discriminated — no `any`. The first four are the
+ *  core kinds; domain variants (dynamical systems, …) are appended here and dispatched via
+ *  the registry, so `MathObject["kind"]` stays exact for narrowing. */
 export type MathObject =
   | { kind: "expression"; source: string }
   | { kind: "matrix"; data: number[][] }
   | { kind: "vector"; data: number[] }
-  | { kind: "topology"; surfaceId: string };
+  | { kind: "topology"; surfaceId: string }
+  | { kind: "dynamicalSystem"; vars: string[]; fieldSource: string[]; params?: Record<string, number>; systemKind: "continuous" | "discrete" };
 
 // Small builders keep the inspector modules terse.
 export const prop = (label: string, value: string, confidence: Confidence, extra: Partial<Property> = {}): Property =>

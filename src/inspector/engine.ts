@@ -4,6 +4,7 @@ import { inspectExpression } from "./inspect/expression.ts";
 import { inspectMatrix } from "./inspect/matrix.ts";
 import { inspectVector } from "./inspect/vector.ts";
 import { inspectTopology } from "./inspect/topology.ts";
+import { inspectDynamicalSystem } from "./inspect/dynamicalSystem.ts";
 import { homeomorphicSurfaces } from "../topo/topology.ts";
 import { parse } from "../mathlab/core/parser.ts";
 import { compile1 } from "../mathlab/core/eval.ts";
@@ -17,6 +18,7 @@ registerInspector("expression", (o) => (o.kind === "expression" ? inspectExpress
 registerInspector("matrix", (o) => (o.kind === "matrix" ? inspectMatrix(o.data) : unsupported(o.kind, "kind mismatch")));
 registerInspector("vector", (o) => (o.kind === "vector" ? inspectVector(o.data) : unsupported(o.kind, "kind mismatch")));
 registerInspector("topology", (o) => (o.kind === "topology" ? inspectTopology(o.surfaceId) : unsupported(o.kind, "kind mismatch")));
+registerInspector("dynamicalSystem", (o) => (o.kind === "dynamicalSystem" ? inspectDynamicalSystem(o.vars, o.fieldSource, o.params ?? {}, o.systemKind) : unsupported(o.kind, "kind mismatch")));
 
 /** Inspect any registered mathematical object. Pure, React-free. Dispatches via the registry;
  *  an unregistered kind degrades to a graceful "unsupported" result instead of throwing. */

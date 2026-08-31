@@ -120,6 +120,70 @@ describe("topology inspector", () => {
   });
 });
 
+describe("dynamical-system inspector", () => {
+  // The classic linear center: dx/dt = y, dy/dt = -x (rotation), sole equilibrium at (0,0).
+  const center = { kind: "dynamicalSystem" as const, vars: ["x", "y"], fieldSource: ["y", "-x"], systemKind: "continuous" as const };
+
+  it("dispatches to the dynamical-system inspector", () => {
+    expect(inspect(center).kind).toBe("dynamicalSystem");
+  });
+
+  it("Structure reports the state variables, kind and field equations", () => {
+    const r = inspect(center);
+    expect(propVal(r, "Structure", "State variables")).toBe("x, y");
+    expect(propVal(r, "Structure", "Kind")).toBe("continuous");
+    expect(propVal(r, "Structure", "dx/dt")).toBe("y");
+    expect(propVal(r, "Structure", "dy/dt")).toContain("x"); // "-x" (printer may normalize the sign)
+  });
+
+  it("identifies a continuous 2-D system", () => {
+    expect(inspect(center).identity).toContain("Continuous");
+    expect(inspect(center).identity).toContain("ℝ^2");
+  });
+
+  it("Equilibria finds the origin (numerical candidate)", () => {
+    const eq = inspect(center).sections.find((s) => s.title.startsWith("Equilibria"))!;
+    expect(eq.properties.some((p) => p.value === "(0, 0)")).toBe(true);
+    expect(eq.properties.every((p) => p.confidence === "numerical")).toBe(true);
+  });
+
+  it("Stability classifies the origin as a center", () => {
+    const r = inspect(center);
+    expect(propVal(r, "Stability", "Equilibrium 1")).toBe("center");
+    expect(r.warnings.some((w) => w.includes("NUMERICAL CANDIDATES"))).toBe(true); // honest note surfaced
+  });
+
+  it("emits the new domain capabilities", () => {
+    const caps = inspect(center).capabilities;
+    expect(caps).toContain("vectorField");
+    expect(caps).toContain("equilibria");
+    expect(caps).toContain("stability");
+  });
+
+  it("handles a discrete map: xₙ₊₁ = 0.5·x → stable fixed point at 0", () => {
+    const r = inspect({ kind: "dynamicalSystem", vars: ["x"], fieldSource: ["0.5*x"], systemKind: "discrete" });
+    expect(propVal(r, "Structure", "Kind")).toBe("discrete");
+    expect(propVal(r, "Structure", "x(n+1)")).toContain("x");
+    expect(propVal(r, "Stability", "Equilibrium 1")).toBe("stable-node");
+  });
+
+  it("degrades gracefully on a malformed field (unknown symbol) — warning, no throw", () => {
+    let r!: InspectionResult;
+    expect(() => { r = inspect({ kind: "dynamicalSystem", vars: ["x"], fieldSource: ["y + 1"], systemKind: "continuous" }); }).not.toThrow();
+    expect(r.identity).toBe("Invalid dynamical system");
+    expect(r.warnings.length).toBeGreaterThan(0);
+    expect(r.sections).toEqual([]);
+  });
+
+  it("skips equilibria/stability past the dimension cap with a warning", () => {
+    const vars = ["a", "b", "c", "d", "e", "f"];
+    const r = inspect({ kind: "dynamicalSystem", vars, fieldSource: vars.map((v) => `-${v}`), systemKind: "continuous" });
+    expect(r.sections.some((s) => s.title.startsWith("Equilibria"))).toBe(false);
+    expect(r.capabilities).not.toContain("equilibria");
+    expect(r.warnings.some((w) => w.includes("exceeds"))).toBe(true);
+  });
+});
+
 describe("comparison", () => {
   it("topology: sphere vs torus cannot be homeomorphic (exact)", () => {
     const c = compare({ kind: "topology", surfaceId: "sphere" }, { kind: "topology", surfaceId: "torus" })!;
