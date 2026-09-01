@@ -44,7 +44,9 @@ export type Capability =
   | "criticalPoints" | "graph" | "determinant" | "inverse" | "eigen"
   | "geometricAction" | "topologyInvariants" | "compare"
   // Dynamical-system domain.
-  | "equilibria" | "stability" | "vectorField";
+  | "equilibria" | "stability" | "vectorField"
+  // ODE initial-value-problem domain.
+  | "odeSolve" | "trajectory";
 
 export interface InspectionResult {
   kind: MathKind;
@@ -64,7 +66,8 @@ export type MathObject =
   | { kind: "matrix"; data: number[][] }
   | { kind: "vector"; data: number[] }
   | { kind: "topology"; surfaceId: string }
-  | { kind: "dynamicalSystem"; vars: string[]; fieldSource: string[]; params?: Record<string, number>; systemKind: "continuous" | "discrete" };
+  | { kind: "dynamicalSystem"; vars: string[]; fieldSource: string[]; params?: Record<string, number>; systemKind: "continuous" | "discrete" }
+  | { kind: "ode"; vars: string[]; fieldSource: string[]; params?: Record<string, number>; y0: number[]; t0: number; t1: number; method?: string };
 
 // Small builders keep the inspector modules terse.
 export const prop = (label: string, value: string, confidence: Confidence, extra: Partial<Property> = {}): Property =>
