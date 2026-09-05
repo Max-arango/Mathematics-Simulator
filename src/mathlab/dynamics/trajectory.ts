@@ -23,7 +23,12 @@ export interface SimulateOptions extends ODEOptions {
   t1?: number;
   /** Discrete: number of map iterations. Default 100. */
   steps?: number;
+  /** Time direction. "backward" integrates −f (reverse-time flow) — same solver,
+   *  sign-flipped field (no second RK4). Default "forward". */
+  direction?: IntegrationDirection;
 }
+
+export type IntegrationDirection = "forward" | "backward";
 
 const DEFAULT_DISCRETE_STEPS = 100;
 
@@ -46,7 +51,11 @@ export function simulate(
     const t0 = opts.t0 ?? 0;
     const { t1 } = opts;
     if (t1 === undefined) throw new InvalidInputError("continuous simulate requires opts.t1");
-    const f: ODEFn = (_t, y) => evalField(sys, y);
+    const s = opts.direction === "backward" ? -1 : 1;
+    const f: ODEFn = (_t, y) => {
+      const v = evalField(sys, y);
+      return s === -1 ? v.map((c) => -c) : v;
+    };
     const res = solveODE(opts.method ?? "rk4", { f, y0: x0, t0, t1 }, opts);
     return { t: res.t, states: res.y };
   }
