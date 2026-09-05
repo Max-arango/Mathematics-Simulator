@@ -119,6 +119,45 @@ describe("stepTrajectory: numerical failure", () => {
   });
 });
 
+describe("stepTrajectory: domain enforcement", () => {
+  it("marks 'outOfDomain' when the trajectory leaves the explicit domain box", () => {
+    // Linear blow-up along x: x(t) = x0 * exp(t). Domain box |x| < 2 clips it.
+    const sys = makeSystem(["x"], ["x"], {}, "continuous");
+    const limits = baseLimits({
+      viewport: { xMin: -100, xMax: 100, yMin: -100, yMax: 100 },
+      domain: { xMin: -2, xMax: 2, yMin: -2, yMax: 2 },
+      tMax: 50,
+    });
+    const t = createTrajectory(sys, [1], 0.05);
+    for (let i = 0; i < 500 && t.status === "running"; i++) stepTrajectory(sys, t, 0.05, limits);
+    expect(t.status).toBe("outOfDomain");
+    expect(t.termination?.status).toBe("outOfDomain");
+    expect(t.termination?.detail).toMatch(/domain/);
+  });
+
+  it("does NOT enforce domain when enforceDomain:false (lets it run to timeout instead)", () => {
+    const sys = makeSystem(["x"], ["x"], {}, "continuous");
+    const limits = baseLimits({
+      viewport: { xMin: -100, xMax: 100, yMin: -100, yMax: 100 },
+      domain: { xMin: -2, xMax: 2, yMin: -2, yMax: 2 },
+      enforceDomain: false,
+      tMax: 2,
+    });
+    const t = createTrajectory(sys, [1], 0.05);
+    for (let i = 0; i < 500 && t.status === "running"; i++) stepTrajectory(sys, t, 0.05, limits);
+    expect(t.status).toBe("timeout");
+    expect(t.status).not.toBe("outOfDomain");
+  });
+
+  it("defaults domain to viewport (out-of-viewport ⇒ escaped, not outOfDomain)", () => {
+    const sys = makeSystem(["x"], ["x"], {}, "continuous");
+    const limits = baseLimits({ viewport: { xMin: -2, xMax: 2, yMin: -2, yMax: 2 }, tMax: 50 });
+    const t = createTrajectory(sys, [1], 0.05);
+    for (let i = 0; i < 500 && t.status === "running"; i++) stepTrajectory(sys, t, 0.05, limits);
+    expect(t.status).toBe("escaped");
+  });
+});
+
 describe("pause / resume", () => {
   it("pause stops stepping; resume continues", () => {
     const sys = makeSystem(["x", "y"], ["y", "-x"], {}, "continuous");

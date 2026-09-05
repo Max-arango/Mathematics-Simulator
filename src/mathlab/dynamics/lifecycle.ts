@@ -30,7 +30,7 @@ import type { ODEOptions } from "../ode/types.ts";
 import { distance, norm, type Vec } from "../linear/vector.ts";
 import { evalField, type DynamicalSystem } from "./system.ts";
 
-export type TrajectoryStatus = "running" | "paused" | "equilibrium" | "escaped" | "timeout" | "numericalFailure";
+export type TrajectoryStatus = "running" | "paused" | "equilibrium" | "escaped" | "timeout" | "numericalFailure" | "outOfDomain";
 
 export interface TerminationReason {
   status: Exclude<TrajectoryStatus, "running" | "paused">;
@@ -60,8 +60,15 @@ export interface TrajectoryState {
 }
 
 export interface SimulationLimits {
-  /** Axis-aligned viewport in world coordinates. */
+  /** Visual viewport in world coordinates (where the camera is pointing). */
   viewport: { xMin: number; xMax: number; yMin: number; yMax: number };
+  /** Physical domain. Trajectories that leave this box terminate as "outOfDomain".
+   *  May be wider or narrower than `viewport`. Default: matches viewport. */
+  domain?: { xMin: number; xMax: number; yMin: number; yMax: number };
+  /** When false, the domain check is skipped — trajectories may roam anywhere
+   *  until they hit a numerical-safety wall (timeout / numericalFailure / escaped).
+   *  Default true. */
+  enforceDomain?: boolean;
   /** Hard simulation time cap (the timeline's t1). */
   tMax: number;
   /** Optional list of equilibria used to tag the destination. */
@@ -256,7 +263,23 @@ export function stepTrajectory(
       status: "escaped",
       at: last.slice(),
       t: state.elapsedTime,
-      detail: `outside [${vp.xMin}, ${vp.xMax}] × [${vp.yMin}, ${vp.yMax}]`,
+      detail: `outside viewport [${vp.xMin}, ${vp.xMax}] × [${vp.yMin}, ${vp.yMax}]`,
+    };
+    return { state, termination: state.termination, advanced: true };
+  }
+
+  // (3b) domain violation. Domain defaults to the viewport; if the caller
+  //      passes a wider/narrower `domain` and enforceDomain is on, terminate.
+  const dom = limits.domain ?? vp;
+  if (limits.enforceDomain !== false &&
+    (last[0] < dom.xMin || last[0] > dom.xMax ||
+     last[1] < dom.yMin || last[1] > dom.yMax)) {
+    state.status = "outOfDomain";
+    state.termination = {
+      status: "outOfDomain",
+      at: last.slice(),
+      t: state.elapsedTime,
+      detail: `outside domain [${dom.xMin}, ${dom.xMax}] × [${dom.yMin}, ${dom.yMax}]`,
     };
     return { state, termination: state.termination, advanced: true };
   }

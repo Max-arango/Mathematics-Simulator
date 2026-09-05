@@ -56,6 +56,7 @@ const STATUS_COLOR: Record<TrajectoryState["status"], string> = {
   escaped: "#94a3b8",      // slate: left the visible region
   timeout: "#fb923c",      // amber: ran out of budget
   numericalFailure: "#ef4444", // red: integrator blew up
+  outOfDomain: "#c084fc",  // violet: clipped by explicit domain
   paused: "#cbd5e1",       // neutral: user paused
 };
 
@@ -64,6 +65,13 @@ interface Layers { field: boolean; trails: boolean; nullclines: boolean; equilib
 
 // Mode of the cursor: "launch" (click→particle, drag→pan) or "probe" (no launch, shows F(x,y)).
 type Mode = "launch" | "probe";
+
+// Axis-aligned ranges (rectangles). Used for the camera, the equilibria-search
+// region, and the physical domain — three independent rectangles that all live
+// in world coordinates. They DO NOT need to coincide: the camera is what the
+// user sees, the search range is where Newton hunts for equilibria, and the
+// domain is where trajectories are physically clipped.
+interface Rect { xMin: number; xMax: number; yMin: number; yMax: number; }
 
 // ─── component ────────────────────────────────────────────────────────────────
 export function DynamicsView() {
@@ -76,6 +84,16 @@ export function DynamicsView() {
 
   // Camera.
   const [view, setView] = useState<View>({ cx: 0, cy: 0, span: 12 });
+
+  // Search range for findEquilibria + grid density. Initially a wide default;
+  // the user can narrow it to focus on a region of state space.
+  const [searchRange, setSearchRange] = useState<Rect>({ xMin: -14, xMax: 14, yMin: -14, yMax: 14 });
+  const [searchGrid, setSearchGrid] = useState(11); // gridPoints per dim → 11² = 121 seeds
+
+  // Physical domain for trajectories. Default = wide so behaviour matches the
+  // pre-domain build. Toggle `enforceDomain` to clip trajectories here.
+  const [domain, setDomain] = useState<Rect>({ xMin: -50, xMax: 50, yMin: -50, yMax: 50 });
+  const [enforceDomain, setEnforceDomain] = useState(false);
 
   // Simulation controls.
   const [playing, setPlaying] = useState(true);
@@ -105,10 +123,27 @@ export function DynamicsView() {
   const equilibria = useMemo(() => {
     if (!sys) return [];
     try {
-      const { points } = findEquilibria(sys, { range: [-14, 14], gridPoints: 11 });
-      return points.map((p) => ({ point: p, stab: classifyEquilibrium(sys, p) }));
+      const { points, note } = findEquilibria(sys, {
+        range: [searchRange.xMin, searchRange.xMax], // equilibria.ts only uses range[0..1] as a per-dim interval
+        gridPoints: searchGrid,
+        // NOTE: equilibria.findEquilibria takes ONE per-dim range and uses it for BOTH axes.
+        // For asymmetric boxes the caller should pass `seeds` directly. We accept
+        // the y-axis using the same interval; if xMin/xMax differ from yMin/yMax
+        // significantly, the user can drive Newton via the asymmetry by passing
+        // explicit seeds — see inspector. (ponytail: keep the simple UI shape,
+        // upgrade when per-axis ranges matter.)
+        seeds: undefined,
+      });
+      // Honour a different y-range by filtering on yMin/yMax — Newton found
+      // roots in the per-dim range, we keep only those inside the user's box.
+      const filtered = points.filter((p) =>
+        p[0] >= searchRange.xMin && p[0] <= searchRange.xMax &&
+        p[1] >= searchRange.yMin && p[1] <= searchRange.yMax
+      );
+      if (note) console.debug("[dynamics] equilibria:", note);
+      return filtered.map((p) => ({ point: p, stab: classifyEquilibrium(sys, p) }));
     } catch { return []; }
-  }, [sys]);
+  }, [sys, searchRange.xMin, searchRange.xMax, searchRange.yMin, searchRange.yMax, searchGrid]);
 
   const nullclinesData = useMemo(() => {
     if (!sys || !layers.nullclines) return null;
@@ -134,6 +169,8 @@ export function DynamicsView() {
   const nullclinesRef = useRef(nullclinesData); nullclinesRef.current = nullclinesData;
   const probeRef = useRef(probe); probeRef.current = probe;
   const modeRef = useRef(mode); modeRef.current = mode;
+  const domainRef = useRef(domain); domainRef.current = domain;
+  const enforceDomainRef = useRef(enforceDomain); enforceDomainRef.current = enforceDomain;
   const trajectories = useRef<TrajectoryState[]>([]);
 
   // Reset camera / simulation. Keep these distinct so they never get conflated.
@@ -238,6 +275,19 @@ export function DynamicsView() {
         drawPolyline(ctx, nc.xNullcline.samples, "#22d3ee", bounds, w, h, v); // cyan
         drawPolyline(ctx, nc.yNullcline.samples, "#f472b6", bounds, w, h, v); // pink
       }
+    }
+
+    // Domain rectangle — solid violet when enforced, faint when merely configured.
+    {
+      const dom = domainRef.current;
+      const enforced = enforceDomainRef.current;
+      const [x0, y0] = worldToScreen(dom.xMin, dom.yMax, w, h, v);
+      const [x1, y1] = worldToScreen(dom.xMax, dom.yMin, w, h, v);
+      ctx.strokeStyle = enforced ? "rgba(192,132,252,0.7)" : "rgba(192,132,252,0.25)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash(enforced ? [] : [4, 4]);
+      ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+      ctx.setLineDash([]);
     }
 
     // Trails + status markers.
@@ -352,8 +402,11 @@ export function DynamicsView() {
       if (s && playRef.current) {
         const dt = 0.02, sub = Math.max(1, Math.round(speedRef.current));
         const vp = viewBounds(viewRef.current, 1, 1); // aspect doesn't matter for bounds here
+        const dom = domainRef.current;
         const limits: SimulationLimits = {
           viewport: { xMin: vp.xMin, xMax: vp.xMax, yMin: vp.yMin, yMax: vp.yMax },
+          domain: dom,
+          enforceDomain: enforceDomainRef.current,
           tMax: 200,
           equilibria: eqRef.current.map((e) => e.point),
         };
@@ -528,6 +581,49 @@ export function DynamicsView() {
           </div>
         </div>
 
+        <RangeBox
+          label="Equilibria search range"
+          rect={searchRange}
+          onChange={setSearchRange}
+          syncFrom={() => {
+            const b = viewBounds(view, 1, 1);
+            setSearchRange({ xMin: b.xMin, xMax: b.xMax, yMin: b.yMin, yMax: b.yMax });
+          }}
+        >
+          <label className="flex items-center gap-2 text-[11px] text-slate-400">
+            <span className="w-16">grid (per axis)</span>
+            <input
+              type="range" className="flex-1" min={3} max={21} step={2}
+              value={searchGrid}
+              onChange={(e) => setSearchGrid(Number(e.target.value))}
+            />
+            <span className="w-6 text-right font-mono">{searchGrid}</span>
+          </label>
+          <p className="mt-0.5 text-[10px] text-slate-500">{searchGrid ** 2} Newton seeds</p>
+        </RangeBox>
+
+        <RangeBox
+          label="Trajectory domain"
+          rect={domain}
+          onChange={setDomain}
+          syncFrom={() => {
+            const b = viewBounds(view, 1, 1);
+            setDomain({ xMin: b.xMin, xMax: b.xMax, yMin: b.yMin, yMax: b.yMax });
+          }}
+        >
+          <label className="mt-1 flex items-center gap-2 text-[11px] text-slate-300">
+            <input
+              type="checkbox"
+              checked={enforceDomain}
+              onChange={(e) => setEnforceDomain(e.target.checked)}
+            />
+            <span>Clip trajectories to domain</span>
+          </label>
+          <p className="text-[10px] text-slate-500">
+            When off, the violet box is a hint; trajectories may roam until they hit another wall.
+          </p>
+        </RangeBox>
+
         <div>
           <h3 className="mb-1 text-[10px] uppercase tracking-wide text-slate-500">Equilibria</h3>
           {equilibria.length === 0 && <span className="text-[11px] text-slate-500">none found</span>}
@@ -553,7 +649,7 @@ export function DynamicsView() {
           <p><b className="text-slate-300">Click</b> plane → launch. <b className="text-slate-300">Drag</b> → pan. <b className="text-slate-300">Wheel</b> → zoom.</p>
           <p><b className="text-slate-300">Probe</b> → inspect F(x,y) locally.</p>
           <p><b className="text-slate-300">Click</b> near an equilibrium → select it.</p>
-          <p>Legend — white=initial · yellow=running · dashed=pink link=arrived at eq · slate=escaped · amber=timeout · red=numerical failure.</p>
+          <p>Legend — white=initial · yellow=running · dashed=pink link=arrived at eq · slate=escaped · violet=out of domain · amber=timeout · red=numerical failure.</p>
         </div>
       </aside>
       <main className="relative min-w-0 flex-1">
@@ -609,6 +705,39 @@ function EquilibriumPanel({ info, sys }: { info: { point: number[]; stab: Stabil
         </div>
       )}
       <p className="mt-1.5 text-[11px] leading-snug text-slate-400">{stab.reason}</p>
+    </div>
+  );
+}
+
+// ── RangeBox: a 4-input rectangle editor with a "sync from view" button. ─────
+function RangeBox({
+  label, rect, onChange, syncFrom, children,
+}: {
+  label: string;
+  rect: Rect;
+  onChange: (r: Rect) => void;
+  syncFrom: () => void;
+  children?: React.ReactNode;
+}) {
+  const numCls = "w-16 rounded bg-slate-800/80 px-1.5 py-0.5 font-mono text-[11px] text-cyan-100 outline-none focus:ring-1 focus:ring-cyan-400";
+  const set = (key: keyof Rect) => (e: React.ChangeEvent<HTMLInputElement>) => {
+    const v = Number(e.target.value);
+    if (!Number.isFinite(v)) return;
+    onChange({ ...rect, [key]: v });
+  };
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between">
+        <h3 className="text-[10px] uppercase tracking-wide text-slate-500">{label}</h3>
+        <button onClick={syncFrom} className="rounded bg-white/5 px-1.5 py-0.5 text-[10px] text-slate-400 hover:bg-white/10 hover:text-cyan-200">sync from view</button>
+      </div>
+      <div className="grid grid-cols-2 gap-x-1.5 gap-y-1">
+        <span className="text-[10px] text-slate-500">x min</span><input className={numCls} type="number" step="any" value={rect.xMin} onChange={set("xMin")} />
+        <span className="text-[10px] text-slate-500">x max</span><input className={numCls} type="number" step="any" value={rect.xMax} onChange={set("xMax")} />
+        <span className="text-[10px] text-slate-500">y min</span><input className={numCls} type="number" step="any" value={rect.yMin} onChange={set("yMin")} />
+        <span className="text-[10px] text-slate-500">y max</span><input className={numCls} type="number" step="any" value={rect.yMax} onChange={set("yMax")} />
+      </div>
+      {children}
     </div>
   );
 }
