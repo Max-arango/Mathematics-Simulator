@@ -18,7 +18,7 @@ export interface AnimState {
   dir: 1 | -1;
 }
 
-export type AppMode = "calculator" | "fractal" | "bloch" | "fourd" | "topo" | "inspector" | "notebook" | "docs";
+export type AppMode = "calculator" | "fractal" | "bloch" | "fourd" | "topo" | "dynamics" | "inspector" | "notebook" | "docs";
 
 interface State {
   appMode: AppMode;

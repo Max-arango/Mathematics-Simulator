@@ -7,6 +7,7 @@ import { GraphView } from "./components/graph/GraphView.tsx";
 import { BlochView } from "./components/bloch/BlochView.tsx";
 import { FourDView } from "./components/fourd/FourDView.tsx";
 import { TopoView } from "./components/topo/TopoView.tsx";
+import { DynamicsView } from "./components/dynamics/DynamicsView.tsx";
 import { useStore, type AppMode } from "./store.ts";
 
 // KaTeX-heavy views are lazy-loaded to keep the initial bundle lean.
@@ -39,6 +40,7 @@ function ModeNav() {
     { id: "bloch", label: "Bloch Sphere" },
     { id: "fourd", label: "4D" },
     { id: "topo", label: "Topology" },
+    { id: "dynamics", label: "Dynamics" },
     { id: "inspector", label: "Inspector" },
     { id: "notebook", label: "Notebook" },
     { id: "docs", label: "Docs" },
@@ -81,6 +83,8 @@ export function App() {
         <FourDView />
       ) : appMode === "topo" ? (
         <TopoView />
+      ) : appMode === "dynamics" ? (
+        <DynamicsView />
       ) : appMode === "inspector" ? (
         <Suspense fallback={<div className="p-8 text-sm text-slate-500">Loading…</div>}>
           <InspectorView />
