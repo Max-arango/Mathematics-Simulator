@@ -14,7 +14,7 @@ import {
 import {
   viewBounds, worldToScreen, screenToWorld, tickInterval, fieldGrid, magnitudeIntensity, type View,
 } from "../../mathlab/dynamics/geometry.ts";
-import { norm } from "../../mathlab/linear/vector.ts";
+import { norm, type Vec } from "../../mathlab/linear/vector.ts";
 
 // ── presets: each carries a brief WHY-this-is-instructive. ───────────────────
 interface Preset {
@@ -58,6 +58,7 @@ const STATUS_COLOR: Record<TrajectoryState["status"], string> = {
   numericalFailure: "#ef4444", // red: integrator blew up
   outOfDomain: "#c084fc",  // violet: clipped by explicit domain
   paused: "#cbd5e1",       // neutral: user paused
+  limitCycle: "#22d3ee",   // cyan: heuristic periodic orbit
 };
 
 // Layer toggles (cheap state, recomputed once per render).
@@ -293,7 +294,8 @@ export function DynamicsView() {
     // Trails + status markers.
     if (showTrailsRef.current) {
       for (const tr of trajectories.current) {
-        const pts = tr.trail;
+        // Samples are aligned (t, x); the renderer only needs the geometry.
+        const pts: Vec[] = tr.samples.map((s) => s.x);
         if (pts.length < 2) continue;
         ctx.strokeStyle = "rgba(56,224,200,0.85)";
         ctx.lineWidth = 1.4;
@@ -317,12 +319,12 @@ export function DynamicsView() {
         ctx.fillStyle = STATUS_COLOR[tr.status];
         ctx.beginPath(); ctx.arc(hx, hy, 5, 0, Math.PI * 2); ctx.fill();
         // Velocity tick (a short tick in the F direction) — makes the live state legible.
-        if (norm(tr.direction) > 0) {
+        if (norm(tr.velocity) > 0) {
           ctx.strokeStyle = STATUS_COLOR[tr.status];
           ctx.lineWidth = 1.5;
           ctx.beginPath();
           ctx.moveTo(hx, hy);
-          ctx.lineTo(hx + tr.direction[0] * 10, hy - tr.direction[1] * 10);
+          ctx.lineTo(hx + tr.velocity[0] * 10, hy - tr.velocity[1] * 10);
           ctx.stroke();
         }
       } else if (tr.termination) {
@@ -333,8 +335,9 @@ export function DynamicsView() {
 
         // Visual link to the destination equilibrium (when status === "equilibrium")
         // — a thin dashed segment from the trajectory end to the equilibrium dot.
-        if (tr.status === "equilibrium" && tr.termination.destinationEquilibrium !== undefined) {
-          const eq = eqRef.current[tr.termination.destinationEquilibrium];
+        const dest = tr.termination.destination;
+        if (tr.status === "equilibrium" && dest?.kind === "equilibrium" && dest.equilibriumIndex !== undefined) {
+          const eq = eqRef.current[dest.equilibriumIndex];
           if (eq) {
             const [qx, qy] = worldToScreen(eq.point[0], eq.point[1], w, h, v);
             ctx.strokeStyle = "rgba(244,114,182,0.6)";
@@ -413,7 +416,7 @@ export function DynamicsView() {
         for (const tr of trajectories.current) {
           if (tr.status !== "running") continue;
           for (let k = 0; k < sub; k++) stepTrajectory(s, tr, dt, limits);
-          trimTrail(tr.trail, trailLenRef.current);
+          trimTrail(tr, trailLenRef.current);
         }
         // Sidebar readout throttled to ~10 Hz to avoid thrash.
         if (now - lastSidebar > 100) { forceSidebar((n) => n + 1); lastSidebar = now; }

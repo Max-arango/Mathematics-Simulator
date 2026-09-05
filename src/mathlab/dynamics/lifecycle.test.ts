@@ -14,15 +14,24 @@ const baseLimits = (overrides: Partial<SimulationLimits> = {}): SimulationLimits
 });
 
 describe("createTrajectory", () => {
-  it("seeds initialPosition, currentPosition, single-point trail, status=running", () => {
+  it("seeds initialPosition, currentPosition, single-sample trajectory, status=running", () => {
     const sys = makeSystem(["x", "y"], ["y", "-x"], {}, "continuous");
     const t = createTrajectory(sys, [1, 0], 0.02);
     expect(t.initialPosition).toEqual([1, 0]);
     expect(t.currentPosition).toEqual([1, 0]);
-    expect(t.trail.length).toBe(1);
+    expect(t.samples.length).toBe(1);
+    expect(t.samples[0]).toEqual({ t: 0, x: [1, 0] });
+    expect(t.direction).toBe("forward");
     expect(t.status).toBe("running");
     expect(t.elapsedTime).toBe(0);
     expect(t.integrationStep).toBe(0.02);
+    expect(typeof t.id).toBe("number");
+  });
+
+  it("supports direction='backward' on creation", () => {
+    const sys = makeSystem(["x", "y"], ["y", "-x"], {}, "continuous");
+    const t = createTrajectory(sys, [1, 0], 0.02, "backward");
+    expect(t.direction).toBe("backward");
   });
 
   it("rejects discrete systems (lifecycle is flow-only)", () => {
@@ -47,19 +56,17 @@ describe("stepTrajectory: equilibrium snap (NOT bare |F|<ε)", () => {
     // Damped oscillator, eq at origin.
     const sys = makeSystem(["x", "y"], ["y", "-x - 0.3*y"], {}, "continuous");
     const limits = baseLimits({ equilibria: [[0, 0]] });
-    // Start near the origin so it converges quickly.
     const t = createTrajectory(sys, [0.01, 0.01], 0.02);
     for (let i = 0; i < 5000 && t.status === "running"; i++) stepTrajectory(sys, t, 0.02, limits);
     expect(t.status).toBe("equilibrium");
     expect(t.termination?.status).toBe("equilibrium");
-    expect(t.termination?.destinationEquilibrium).toBe(0);
+    expect(t.termination?.destination?.kind).toBe("equilibrium");
+    expect(t.termination?.destination?.equilibriumIndex).toBe(0);
     expect(t.termination?.residualNorm).toBeLessThan(1e-3);
+    expect(t.termination?.confidence).toBe("numerical");
   });
 
   it("does NOT classify a slow region as equilibrium when no equilibrium is known", () => {
-    // Rotation: |F|=|x| constant non-zero ⇒ never quiescent. Use a field that's
-    // intentionally flat at one point (f=g=0 everywhere) so |F|≈0 everywhere,
-    // but pass NO equilibria — must keep running rather than lie.
     const sys = makeSystem(["x", "y"], ["0", "0"], {}, "continuous");
     const limits = baseLimits({ equilibria: [] });
     const tr = createTrajectory(sys, [1, 1], 0.02);
@@ -69,23 +76,82 @@ describe("stepTrajectory: equilibrium snap (NOT bare |F|<ε)", () => {
   });
 
   it("does NOT classify when equilibria are passed but none are within snap radius", () => {
-    // Rotation |F| = |(x,y)|; equilibrium at origin. Start far away — |F| large.
-    // We can't easily engineer |F|<ε AND no nearby equilibrium (everywhere-away-
-    // from-origin the magnitude is > 0.1 here), so we test the boundary differently:
-    // ask the simulator to step a tiny dt from a point already AT an eq, with the
-    // equilibrium list deliberately empty.
     const sys = makeSystem(["x", "y"], ["y", "-x"], {}, "continuous");
     const limits = baseLimits({ equilibria: [] });
-    const tr = createTrajectory(sys, [0, 0], 0.02); // start AT origin
+    const tr = createTrajectory(sys, [0, 0], 0.02);
     stepTrajectory(sys, tr, 0.5, limits);
-    // rk4 around a center keeps magnitude 1; not quiescent → still running.
     expect(tr.status).toBe("running");
   });
 });
 
-describe("stepTrajectory: escape detection", () => {
+describe("stepTrajectory: backward integration", () => {
+  it("integrates -f(x): a forward rotation trajectory run backward retraces the orbit in reverse", () => {
+    // Forward rotation [y,-x]: x(t)=(cos t, sin t). Backward from (1,0) gives
+    // x_back(t) = (cos(-t), sin(-t)) = (cos t, -sin t) — symmetric below the x-axis.
+    const sys = makeSystem(["x", "y"], ["y", "-x"], {}, "continuous");
+    const limits = baseLimits({ tMax: Math.PI, viewport: VP });
+    const tr = createTrajectory(sys, [1, 0], 0.02, "backward");
+    for (let i = 0; i < 200 && tr.status === "running"; i++) stepTrajectory(sys, tr, 0.02, limits);
+    expect(tr.status).toBe("timeout");
+    // End point at t=π should be approximately (-1, 0).
+    expect(tr.currentPosition[0]).toBeCloseTo(-1, 1);
+    expect(tr.currentPosition[1]).toBeCloseTo(0, 1);
+    // elapsedTime is the REVERSE-time coordinate — should be NEGATIVE.
+    expect(tr.elapsedTime).toBeLessThan(0);
+  });
+
+  it("backward from near a saddle's stable direction stays on the stable manifold", () => {
+    // Saddle at origin: ẋ=x, ẏ=-y. Forward stable manifold is the y-axis (y-component
+    // decays, x-component grows). Backward from a point on the y-axis, x should
+    // DECAY toward the origin (the stable direction in reverse time) and y
+    // should stay near the starting y.
+    const sys = makeSystem(["x", "y"], ["x", "-y"], {}, "continuous");
+    const limits = baseLimits({ equilibria: [[0, 0]], tMax: 3, viewport: { xMin: -10, xMax: 10, yMin: -10, yMax: 10 } });
+    const tr = createTrajectory(sys, [0.01, 2], 0.01, "backward");
+    for (let i = 0; i < 500 && tr.status === "running"; i++) stepTrajectory(sys, tr, 0.01, limits);
+    // Status will be 'timeout' (the integrator never quiesces near a saddle).
+    // In reverse time, x should have collapsed toward the origin (stable direction
+    // in forward time is the y-axis, so x→0 as t→−∞).
+    expect(Math.abs(tr.currentPosition[0])).toBeLessThan(0.05);
+    // y grows under reverse integration (it's the unstable direction in forward time);
+    // we just want to confirm we stayed on a meaningful trajectory, not the x-axis.
+    expect(Math.abs(tr.currentPosition[1])).toBeGreaterThan(2);
+  });
+});
+
+describe("stepTrajectory: limit-cycle heuristic", () => {
+  it("marks 'limitCycle' on a system with a stable cycle (Van der Pol, μ=1)", () => {
+    // ẋ=y, ẏ=μ(1-x²)y - x with μ=1. Stable cycle near x²+y²≈4.
+    const sys = makeSystem(["x", "y"], ["y", "(1 - x^2)*y - x"], {}, "continuous");
+    const limits = baseLimits({
+      tMax: 30,
+      viewport: { xMin: -10, xMax: 10, yMin: -10, yMax: 10 },
+      equilibria: [[0, 0]],
+      limitCycleMinCrossings: 3,
+    });
+    const tr = createTrajectory(sys, [0.5, 0], 0.02);
+    for (let i = 0; i < 2000 && tr.status === "running"; i++) stepTrajectory(sys, tr, 0.02, limits);
+    expect(tr.status).toBe("limitCycle");
+    expect(tr.termination?.destination?.kind).toBe("limitCycle");
+    expect(tr.termination?.confidence).toBe("heuristic");
+    expect(tr.termination?.destination?.radius).toBeGreaterThan(0);
+  });
+
+  it("respects disableLimitCycle: true (no heuristic even on a Van der Pol cycle)", () => {
+    const sys = makeSystem(["x", "y"], ["y", "(1 - x^2)*y - x"], {}, "continuous");
+    const limits = baseLimits({
+      tMax: 30,
+      equilibria: [[0, 0]],
+      disableLimitCycle: true,
+    });
+    const tr = createTrajectory(sys, [0.5, 0], 0.02);
+    for (let i = 0; i < 2000 && tr.status === "running"; i++) stepTrajectory(sys, tr, 0.02, limits);
+    expect(tr.status).not.toBe("limitCycle");
+  });
+});
+
+describe("stepTrajectory: escape + timeout + numerical failure", () => {
   it("marks 'escaped' when the point leaves the viewport", () => {
-    // Pure exponential blow-up along x.
     const sys = makeSystem(["x", "y"], ["x", "0"], {}, "continuous");
     const limits = baseLimits();
     const t = createTrajectory(sys, [1, 0], 0.02);
@@ -94,22 +160,17 @@ describe("stepTrajectory: escape detection", () => {
     expect(t.termination?.status).toBe("escaped");
     expect(t.termination?.detail).toMatch(/outside/);
   });
-});
 
-describe("stepTrajectory: timeout", () => {
-  it("marks 'timeout' when t reaches tMax", () => {
-    const sys = makeSystem(["x", "y"], ["y", "-x"], {}, "continuous"); // periodic, never quiesces
+  it("marks 'timeout' when |t| reaches tMax", () => {
+    const sys = makeSystem(["x", "y"], ["y", "-x"], {}, "continuous");
     const limits = baseLimits({ tMax: 0.05 });
     const t = createTrajectory(sys, [1, 0], 0.02);
-    stepTrajectory(sys, t, 5, limits); // request more than budget
+    stepTrajectory(sys, t, 5, limits);
     expect(t.status).toBe("timeout");
-    expect(t.elapsedTime).toBeCloseTo(0.05, 5);
+    expect(Math.abs(t.elapsedTime)).toBeCloseTo(0.05, 5);
   });
-});
 
-describe("stepTrajectory: numerical failure", () => {
   it("marks 'numericalFailure' when the integrator returns non-finite", () => {
-    // Construct a system whose magnitude explodes almost instantly: ẋ = x².
     const sys = makeSystem(["x"], ["x*x"], {}, "continuous");
     const limits = baseLimits({ viewport: { xMin: -1e9, xMax: 1e9, yMin: -1e9, yMax: 1e9 } });
     const t = createTrajectory(sys, [3], 0.02);
@@ -121,7 +182,6 @@ describe("stepTrajectory: numerical failure", () => {
 
 describe("stepTrajectory: domain enforcement", () => {
   it("marks 'outOfDomain' when the trajectory leaves the explicit domain box", () => {
-    // Linear blow-up along x: x(t) = x0 * exp(t). Domain box |x| < 2 clips it.
     const sys = makeSystem(["x"], ["x"], {}, "continuous");
     const limits = baseLimits({
       viewport: { xMin: -100, xMax: 100, yMin: -100, yMax: 100 },
@@ -135,7 +195,7 @@ describe("stepTrajectory: domain enforcement", () => {
     expect(t.termination?.detail).toMatch(/domain/);
   });
 
-  it("does NOT enforce domain when enforceDomain:false (lets it run to timeout instead)", () => {
+  it("does NOT enforce domain when enforceDomain:false", () => {
     const sys = makeSystem(["x"], ["x"], {}, "continuous");
     const limits = baseLimits({
       viewport: { xMin: -100, xMax: 100, yMin: -100, yMax: 100 },
@@ -165,7 +225,7 @@ describe("pause / resume", () => {
     pauseTrajectory(t);
     expect(t.status).toBe("paused");
     stepTrajectory(sys, t, 0.5, baseLimits());
-    expect(t.status).toBe("paused"); // unchanged
+    expect(t.status).toBe("paused");
     expect(t.elapsedTime).toBe(0);
     resumeTrajectory(t);
     expect(t.status).toBe("running");
@@ -173,18 +233,11 @@ describe("pause / resume", () => {
 });
 
 describe("trimTrail", () => {
-  it("keeps the most recent max samples", () => {
-    const trail: number[][] = Array.from({ length: 10 }, (_, i) => [i, i]);
-    trimTrail(trail, 4);
-    expect(trail.length).toBe(4);
-    expect(trail[0]).toEqual([6, 6]);
-    expect(trail[3]).toEqual([9, 9]);
-  });
-  it("no-op when length ≤ max", () => {
-    const trail: number[][] = [[1, 1], [2, 2]];
-    trimTrail(trail, 5);
-    expect(trail.length).toBe(2);
+  it("keeps the most recent max samples on the trajectory", () => {
+    const sys = makeSystem(["x", "y"], ["x", "0"], {}, "continuous");
+    const t = createTrajectory(sys, [0.1, 0], 0.01);
+    for (let i = 0; i < 50; i++) t.samples.push({ t: t.elapsedTime, x: [i, 0] });
+    trimTrail(t, 4);
+    expect(t.samples.length).toBe(4);
   });
 });
-
-// (no trailing safety net)

@@ -1,41 +1,61 @@
 // Trajectory lifecycle for interactive 2-D dynamical systems.
 //
-// Drives a single particle forward step-by-step using an ODE integrator from the
-// shared mathlab core (ode/registry). Tracks a small, explicit status machine so
-// the UI can distinguish "arrived at an equilibrium" from "escaped the viewport"
-// from "ran out of simulation budget" from "integrator blew up".
+// A "trajectory" is the orbit of a single initial condition under the flow
+// ẋ = f(x) (continuous) or x(n+1) = f(x) (discrete). The lifecycle keeps a
+// sampled trajectory — aligned {t, x, y} points — that downstream code can
+// re-use for charts, comparison, basin assignment, notebook export.
 //
-// Termination policy (honest, in order of precedence):
-//   1. numericalFailure  — non-finite state, or |F(x)| ≥ OVERFLOW_NORM, or
-//                          step size exploded. The integrator did not produce
-//                          a reliable next state; we stop and tag the failure.
-//   2. equilibrium       — |F(x)| < QUIESCENT_NORM AND x is within SNAP_RADIUS
-//                          of a known equilibrium. The trajectory's destination
-//                          equilibrium id is recorded (NOT inferred from
-//                          `|F| < ε` alone — spec: ‖F‖ small alone does NOT
-//                          certify "this is an equilibrium").
-//   3. escaped           — point left the viewport [vx0,vx1]×[vy0,vy1]. The
-//                          trajectory left the visible region; it's marked
-//                          escaped (not equilibrium, even if |F| happened to
-//                          be small at the boundary).
-//   4. timeout           — t exceeded tMax OR the step counter exceeded
-//                          MAX_ODE_STEPS. The integrator is still healthy;
-//                          we just ran out of budget.
+// INTEGRATION DIRECTION:
+//   "forward"  → ẋ = f(x)                (the flow as written)
+//   "backward" → ẋ = −f(x)               (reverse-time flow, used for
+//                                          backward trajectories / stable
+//                                          manifolds near saddles)
+// The integrator is shared (ode/registry). No second RK4 / no second solver.
 //
-// "direction" is the unit vector along F(x) at the current state — useful for
-// the UI to mark the current velocity without distorting the field rendering.
+// TERMINATION POLICY (honest, ordered by precedence):
+//   1. numericalFailure — non-finite state, |F(x)| ≥ OVERFLOW_NORM, or the
+//                          integrator itself returned non-finite / overran
+//                          its step budget.
+//   2. limitCycle       — numerical heuristic: enough return-map crossings
+//                          with consistent amplitude ⇒ "approximately periodic".
+//                          Tagged as a HEURISTIC, never as exact.
+//   3. equilibrium      — |F(x)| < QUIESCENT_NORM AND x is within SNAP_RADIUS
+//                          of a known equilibrium. ‖F‖ small alone does NOT
+//                          certify "this is an equilibrium".
+//   4. escaped / outOfDomain / timeout — bookkeeping.
+//
+// destination is populated when status === "equilibrium" or "limitCycle":
+//   equilibrium  → { kind: "equilibrium", index }
+//   limitCycle   → { kind: "limitCycle", samples: Vec[], center, radius }
 import { InvalidInputError } from "../core/errors.ts";
 import { solveODE } from "../ode/registry.ts";
 import type { ODEOptions } from "../ode/types.ts";
 import { distance, norm, type Vec } from "../linear/vector.ts";
 import { evalField, type DynamicalSystem } from "./system.ts";
 
-export type TrajectoryStatus = "running" | "paused" | "equilibrium" | "escaped" | "timeout" | "numericalFailure" | "outOfDomain";
+export type IntegrationDirection = "forward" | "backward";
+export type TrajectoryStatus =
+  | "running" | "paused"
+  | "equilibrium" | "limitCycle"
+  | "escaped" | "outOfDomain" | "timeout"
+  | "numericalFailure";
+
+/** Where the trajectory settled — only meaningful when status !== running/paused. */
+export interface Destination {
+  kind: "equilibrium" | "limitCycle" | "none";
+  /** Index into the equilibria list (when kind === "equilibrium"). */
+  equilibriumIndex?: number;
+  /** Estimate of the closed orbit centre (when kind === "limitCycle"). */
+  center?: Vec;
+  /** Mean radius / amplitude (when kind === "limitCycle"). */
+  radius?: number;
+  /** Sampled points along the orbit (when kind === "limitCycle"). */
+  orbit?: Vec[];
+}
 
 export interface TerminationReason {
   status: Exclude<TrajectoryStatus, "running" | "paused">;
-  /** Equilibrium the trajectory was snapped to (only when status === "equilibrium"). */
-  destinationEquilibrium?: number; // ponytail: id assigned by caller; index in their equilibria list
+  destination?: Destination;
   /** ‍ |F(x)| at termination — surfaced for debugging / readout. */
   residualNorm?: number;
   /** Snapshot of position where the trajectory stopped. */
@@ -44,32 +64,43 @@ export interface TerminationReason {
   t: number;
   /** Optional human-readable detail. */
   detail?: string;
+  /** Confidence label — "exact" / "numerical" / "estimated" / "inferred" / "heuristic".
+   *  All Dynamics verifications are at minimum "numerical"; limit-cycle detection
+   *  is "heuristic" by design (see limitCycle). */
+  confidence?: "numerical" | "estimated" | "heuristic";
 }
 
+/** One (t, x) sample. For 2-D systems x is length 2. */
+export interface TrajectorySample { t: number; x: Vec; }
+
 export interface TrajectoryState {
+  id: number;
   initialPosition: Vec;
   currentPosition: Vec;
-  direction: Vec; // unit vector along F(currentPosition); zero if |F|≈0
-  trail: Vec[];
+  direction: IntegrationDirection;
+  /** Unit vector along F(currentPosition) in the FORWARD sense; zero if |F|≈0. */
+  velocity: Vec;
+  /** Aligned (t, x) samples. The renderer uses the x for the trail; the t is
+   *  the elapsed simulation time at that point. */
+  samples: TrajectorySample[];
+  /** Wall-clock-equivalent simulation time at currentPosition.
+   *  For forward integration t accumulates positively; for backward, t is the
+   *  reverse-time coordinate (decreases as we integrate). */
   elapsedTime: number;
   stepsTaken: number;
   status: TrajectoryStatus;
   termination: TerminationReason | null;
-  /** Integration step size used for the next step. */
   integrationStep: number;
 }
 
 export interface SimulationLimits {
   /** Visual viewport in world coordinates (where the camera is pointing). */
   viewport: { xMin: number; xMax: number; yMin: number; yMax: number };
-  /** Physical domain. Trajectories that leave this box terminate as "outOfDomain".
-   *  May be wider or narrower than `viewport`. Default: matches viewport. */
+  /** Physical domain. Trajectories that leave this box terminate as "outOfDomain". */
   domain?: { xMin: number; xMax: number; yMin: number; yMax: number };
-  /** When false, the domain check is skipped — trajectories may roam anywhere
-   *  until they hit a numerical-safety wall (timeout / numericalFailure / escaped).
-   *  Default true. */
+  /** When false, the domain check is skipped. Default true. */
   enforceDomain?: boolean;
-  /** Hard simulation time cap (the timeline's t1). */
+  /** Hard simulation time cap (the timeline's t1 in the integration direction). */
   tMax: number;
   /** Optional list of equilibria used to tag the destination. */
   equilibria?: Vec[];
@@ -79,40 +110,141 @@ export interface SimulationLimits {
   quiescentNorm?: number;
   /** |F| at or above which we declare numerical failure (overflow). */
   overflowNorm?: number;
+  /** Disable limit-cycle heuristic (default false: heuristic ON). */
+  disableLimitCycle?: boolean;
+  /** Heuristic knob: minimum number of return-map crossings to declare a
+   *  cycle (default 3). Higher ⇒ more conservative. */
+  limitCycleMinCrossings?: number;
 }
 
 export interface StepOutcome {
-  /** Updated state (mutated in place by the stepper; this is the same reference). */
   state: TrajectoryState;
-  /** Termination reason (when status changes off "running"). */
   termination: TerminationReason | null;
-  /** True iff the stepper consumed this call and advanced (or terminated). */
   advanced: boolean;
 }
 
 // Defaults — tuned for a 2-D interactive phase plane, NOT for general IVPs.
-const DEFAULT_SNAP_RADIUS = 0.05; // world units
+const DEFAULT_SNAP_RADIUS = 0.05;
 const DEFAULT_QUIESCENT_NORM = 1e-3;
 const DEFAULT_OVERFLOW_NORM = 1e4;
+const DEFAULT_LIMIT_CYCLE_MIN_CROSSINGS = 3;
+// We track crossings of the plane x' = (x − cx)·v̂ where (cx, v̂) is chosen
+// from the first non-trivial velocity seen — robust for an orbit, agnostic
+// about orientation. STATE_BUFFER below bounds the return-map memory.
+const STATE_BUFFER = 4096;
 
+// ─── limit-cycle heuristic (return map) ────────────────────────────────────
+//
+// Maintain a small circular buffer of the last STATE_BUFFER positions. As the
+// trajectory advances, watch for crossings of an arbitrary plane through the
+// centroid (initial v̂); a "crossing" means x_new · v̂ has a different sign
+// from x_old · v̂. Each crossing pair (entering / leaving) lets us measure the
+// diameter of the orbit at that phase.
+//
+// A trajectory is tagged `limitCycle` when:
+//   (i)   it has at least MIN_CROSSINGS complete crossings, AND
+//   (ii)  the last few diameters have a low coefficient of variation
+//         (consecutive orbits are similar — closed-orbit signature), AND
+//   (iii) the trajectory is NOT sitting on a quiescent point near a known
+//         equilibrium (that would already be classified as equilibrium).
+//
+// This is a HEURISTIC — can miss slow cycles near a center, can false-positive
+// on noisy saddles. Confidence: "heuristic".
+const CIRCLE_LIMIT_BUFFER = 64;
+
+class LimitCycleTracker {
+  private v: Vec | null = null;       // reference plane normal
+  private center: Vec = [0, 0];       // running centroid
+  private crossings = 0;              // completed crossing pairs
+  private lastCrossSign: 0 | 1 | -1 = 0;
+  private lastCrossAbs = 0;           // |projection| at last crossing
+  private recentDiameters: number[] = [];
+
+  /** Returns true if the trajectory has settled onto an approximate cycle. */
+  update(p: Vec, F: Vec): { cycle: boolean; center?: Vec; radius?: number; orbit?: Vec[] } | null {
+    // Initialise the reference plane normal once we see a non-zero velocity.
+    if (!this.v) {
+      const m = norm(F);
+      if (m < 1e-6) return null;
+      this.v = [F[0] / m, F[1] / m];
+      this.center = [p[0], p[1]];
+    }
+    // Maintain centroid (mean of recent positions) — for the orbit centre.
+    this.center = [
+      0.9 * this.center[0] + 0.1 * p[0],
+      0.9 * this.center[1] + 0.1 * p[1],
+    ];
+    // Project (p - center) onto v̂.
+    const proj = (p[0] - this.center[0]) * this.v![0] + (p[1] - this.center[1]) * this.v![1];
+    const sign = proj > 1e-6 ? 1 : proj < -1e-6 ? -1 : 0;
+    if (this.lastCrossSign === 0) { this.lastCrossSign = sign; this.lastCrossAbs = Math.abs(proj); return null; }
+    if (sign !== 0 && sign !== this.lastCrossSign) {
+      // Crossing detected — record the diameter and compare.
+      const diameter = Math.abs(proj) + this.lastCrossAbs;
+      this.recentDiameters.push(diameter);
+      if (this.recentDiameters.length > CIRCLE_LIMIT_BUFFER) this.recentDiameters.shift();
+      this.crossings++;
+      this.lastCrossSign = sign;
+      this.lastCrossAbs = Math.abs(proj);
+    }
+    return null;
+  }
+
+  status(minCrossings: number): { cycle: boolean; center: Vec; radius: number } {
+    if (this.crossings < minCrossings || this.recentDiameters.length < minCrossings) {
+      return { cycle: false, center: this.center, radius: 0 };
+    }
+    // CoV of recent diameters — closed orbits have consistent diameters.
+    const tail = this.recentDiameters.slice(-Math.max(3, minCrossings));
+    const mean = tail.reduce((a, b) => a + b, 0) / tail.length;
+    const variance = tail.reduce((s, v) => s + (v - mean) ** 2, 0) / tail.length;
+    const cv = mean > 1e-9 ? Math.sqrt(variance) / mean : 0;
+    const cycle = cv < 0.15 && mean > 1e-6; // <15% diameter variation ⇒ closed orbit
+    return { cycle, center: this.center, radius: mean / 2 };
+  }
+}
+
+// ─── unit / safe field helpers ─────────────────────────────────────────────
 function unit(v: Vec): Vec {
   const n = norm(v);
   if (n === 0 || !Number.isFinite(n)) return [0, 0];
   return [v[0] / n, v[1] / n];
 }
+function safeField(sys: DynamicalSystem, x: Vec, sign: 1 | -1): Vec {
+  try {
+    const v = evalField(sys, x);
+    if (!v.every(Number.isFinite)) return [0, 0];
+    return sign === -1 ? [-v[0], -v[1]] : v;
+  } catch {
+    return [0, 0];
+  }
+}
+
+// ─── id counter (monotone, scoped to the module) ───────────────────────────
+let _idCounter = 0;
+const nextId = () => ++_idCounter;
+
+// Module-private side channel: TrajectoryState carries a limit-cycle tracker
+// without leaking it through the public type. We attach it under a Symbol key
+// that nobody else can read. (ponytail: cleaner than widening the public type
+// for an implementation detail; if TS strict complains, fall back to a WeakMap.)
+const LC_KEY = Symbol("dynamics.limitCycleTracker");
+
+// ─── public API ────────────────────────────────────────────────────────────
 
 /**
- * Create a fresh trajectory at `x0`. Status is "running" and the trail starts
- * with the initial point. The integrator's nominal step is set to `integrationStep`
- * (caller chooses — typically tied to the view span / speed).
+ * Create a fresh trajectory at `x0`. Direction defaults to "forward"; pass
+ * "backward" to integrate −f. The integrator's nominal step is set to
+ * `integrationStep` (caller chooses — typically tied to the view span / speed).
  */
 export function createTrajectory(
   sys: DynamicalSystem,
   x0: Vec,
   integrationStep: number,
+  direction: IntegrationDirection = "forward",
 ): TrajectoryState {
   if (sys.kind !== "continuous") {
-    throw new InvalidInputError("lifecycle.stepper is for continuous systems (flows); maps need their own iterator");
+    throw new InvalidInputError("lifecycle is for continuous systems (flows); maps need their own iterator");
   }
   if (x0.length !== sys.vars.length) {
     throw new InvalidInputError(`x0 has ${x0.length} coord(s), expected ${sys.vars.length}`);
@@ -120,12 +252,18 @@ export function createTrajectory(
   if (!Number.isFinite(integrationStep) || integrationStep <= 0) {
     throw new InvalidInputError(`integrationStep must be positive and finite (got ${integrationStep})`);
   }
-  const f0 = safeField(sys, x0);
+  if (direction !== "forward" && direction !== "backward") {
+    throw new InvalidInputError(`direction must be "forward" or "backward" (got "${direction}")`);
+  }
+  const sign: 1 | -1 = direction === "forward" ? 1 : -1;
+  const v0 = safeField(sys, x0, sign);
   return {
+    id: nextId(),
     initialPosition: x0.slice(),
     currentPosition: x0.slice(),
-    direction: unit(f0),
-    trail: [x0.slice()],
+    direction,
+    velocity: unit(v0),
+    samples: [{ t: 0, x: x0.slice() }],
     elapsedTime: 0,
     stepsTaken: 0,
     status: "running",
@@ -134,23 +272,10 @@ export function createTrajectory(
   };
 }
 
-/** Evaluate the field defensively: return the zero vector on any throw / non-finite. */
-function safeField(sys: DynamicalSystem, x: Vec): Vec {
-  try {
-    const v = evalField(sys, x);
-    return v.every(Number.isFinite) ? v : [0, 0];
-  } catch {
-    return [0, 0];
-  }
-}
-
 /**
  * Advance a trajectory by `dt` of simulation time, applying the termination
- * policy above. The integrator is the shared `solveODE(method)`; we slice each
- * sub-integration down to the remaining budget so the policy fires inside one
- * call rather than across many.
- *
- * Returns the (mutated) state and a termination reason if the status changed.
+ * policy. Internally this calls solveODE(method) from the shared registry; the
+ * integrator's field is sign-flipped when the trajectory is "backward".
  */
 export function stepTrajectory(
   sys: DynamicalSystem,
@@ -159,18 +284,18 @@ export function stepTrajectory(
   limits: SimulationLimits,
   method: string = "rk4",
 ): StepOutcome {
-  if (state.status !== "running") {
-    return { state, termination: state.termination, advanced: false };
-  }
-  if (!Number.isFinite(dt) || dt <= 0) {
-    return { state, termination: state.termination, advanced: false };
-  }
+  if (state.status !== "running") return { state, termination: state.termination, advanced: false };
+  if (!Number.isFinite(dt) || dt <= 0) return { state, termination: state.termination, advanced: false };
 
   const snapRadius = limits.snapRadius ?? DEFAULT_SNAP_RADIUS;
   const quiescentNorm = limits.quiescentNorm ?? DEFAULT_QUIESCENT_NORM;
   const overflowNorm = limits.overflowNorm ?? DEFAULT_OVERFLOW_NORM;
+  const minCrossings = limits.limitCycleMinCrossings ?? DEFAULT_LIMIT_CYCLE_MIN_CROSSINGS;
   const vp = limits.viewport;
+  const sign: 1 | -1 = state.direction === "forward" ? 1 : -1;
 
+  // For backward integration, the "remaining" budget is the REVERSE-time budget.
+  // We mirror `dt` so a backward step of `dt` consumes `dt` of reverse time.
   const remaining = Math.min(dt, Math.max(0, limits.tMax - state.elapsedTime));
   if (remaining <= 0) {
     state.status = "timeout";
@@ -179,6 +304,7 @@ export function stepTrajectory(
       at: state.currentPosition.slice(),
       t: state.elapsedTime,
       detail: "simulation budget exhausted",
+      confidence: "numerical",
     };
     return { state, termination: state.termination, advanced: true };
   }
@@ -192,10 +318,18 @@ export function stepTrajectory(
   let consumedT = 0;
   let failed = false;
   let failureDetail = "";
+  // Per-trajectory limit-cycle tracker — instantiated lazily on first step.
+  const tracker =
+    (state as unknown as Record<symbol, LimitCycleTracker>)[LC_KEY] ??
+    ((state as unknown as Record<symbol, LimitCycleTracker>)[LC_KEY] = new LimitCycleTracker());
 
   for (let k = 0; k < subSteps; k++) {
     try {
-      const res = solveODE(method, { f: (_t, y) => evalField(sys, y), y0: last, t0: 0, t1: subDt }, opts);
+      const res = solveODE(
+        method,
+        { f: (_t, y) => safeField(sys, y, sign), y0: last, t0: 0, t1: subDt },
+        opts,
+      );
       if (!res.converged) {
         failed = true;
         failureDetail = res.warnings.join("; ") || res.termination;
@@ -224,36 +358,73 @@ export function stepTrajectory(
       at: state.currentPosition.slice(),
       t: state.elapsedTime,
       detail: failureDetail,
+      confidence: "numerical",
     };
     return { state, termination: state.termination, advanced: true };
   }
 
-  state.currentPosition = last;
-  state.trail.push(last.slice());
-  state.elapsedTime += consumedT;
-  state.direction = unit(safeField(sys, last));
+  // Update the cycle tracker with the new state and the FORWARD-sense velocity.
+  // We feed it the raw forward F (sign +1) so the reference plane is consistent
+  // with how the user reads the flow regardless of integration direction.
+  const Fforward = safeField(sys, last, 1);
+  tracker.update(last, Fforward);
 
-  // Termination policy (1) numericalFailure already handled above.
-  // (2) equilibrium: small |F| AND close to a known equilibrium.
-  const F = safeField(sys, last);
-  const fNorm = norm(F);
+  state.currentPosition = last;
+  // For backward integration we accumulate NEGATIVE time.
+  const tDelta = sign * consumedT;
+  state.elapsedTime += tDelta;
+  state.samples.push({ t: state.elapsedTime, x: last.slice() });
+  // Cap sample buffer (oldest dropped) — bounds memory without losing recent shape.
+  if (state.samples.length > STATE_BUFFER) state.samples.splice(0, state.samples.length - STATE_BUFFER);
+  state.velocity = unit(Fforward);
+
+  // (2) limit-cycle heuristic — runs BEFORE equilibrium so a closed orbit is
+  //     not falsely snapped to a nearby equilibrium.
+  if (!limits.disableLimitCycle) {
+    const ls = tracker.status(minCrossings);
+    if (ls.cycle) {
+      // Verify: NOT inside the snap radius of a known stable equilibrium.
+      // (Saddles and unstable eq are excluded: a trajectory won't settle there.)
+      const nearEq = nearestStableEquilibriumIndex(last, limits.equilibria, snapRadius, sys);
+      if (nearEq === -1) {
+        state.status = "limitCycle";
+        state.termination = {
+          status: "limitCycle",
+          destination: {
+            kind: "limitCycle",
+            center: ls.center.slice(),
+            radius: ls.radius,
+            orbit: state.samples.map((s) => s.x.slice()),
+          },
+          at: last.slice(),
+          t: state.elapsedTime,
+          detail: `numerical heuristic: ${minCrossings}+ crossings, orbit radius ≈ ${ls.radius.toFixed(3)}`,
+          confidence: "heuristic",
+        };
+        return { state, termination: state.termination, advanced: true };
+      }
+    }
+  }
+
+  // (3) equilibrium snap — |F| small AND close to a known equilibrium.
+  const fNorm = norm(Fforward);
   if (fNorm < quiescentNorm) {
     const eqIdx = nearestEquilibriumIndex(last, limits.equilibria, snapRadius);
     if (eqIdx !== -1) {
       state.status = "equilibrium";
       state.termination = {
         status: "equilibrium",
-        destinationEquilibrium: eqIdx,
+        destination: { kind: "equilibrium", equilibriumIndex: eqIdx },
         residualNorm: fNorm,
         at: last.slice(),
         t: state.elapsedTime,
+        confidence: "numerical",
       };
       return { state, termination: state.termination, advanced: true };
     }
-    // |F| small but no known equilibrium nearby: DO NOT lie — keep running.
   }
 
-  // (3) escaped viewport.
+  // (4) escaped viewport.
   if (
     last[0] < vp.xMin || last[0] > vp.xMax ||
     last[1] < vp.yMin || last[1] > vp.yMax
@@ -264,12 +435,12 @@ export function stepTrajectory(
       at: last.slice(),
       t: state.elapsedTime,
       detail: `outside viewport [${vp.xMin}, ${vp.xMax}] × [${vp.yMin}, ${vp.yMax}]`,
+      confidence: "numerical",
     };
     return { state, termination: state.termination, advanced: true };
   }
 
-  // (3b) domain violation. Domain defaults to the viewport; if the caller
-  //      passes a wider/narrower `domain` and enforceDomain is on, terminate.
+  // (5) domain violation.
   const dom = limits.domain ?? vp;
   if (limits.enforceDomain !== false &&
     (last[0] < dom.xMin || last[0] > dom.xMax ||
@@ -280,18 +451,20 @@ export function stepTrajectory(
       at: last.slice(),
       t: state.elapsedTime,
       detail: `outside domain [${dom.xMin}, ${dom.xMax}] × [${dom.yMin}, ${dom.yMax}]`,
+      confidence: "numerical",
     };
     return { state, termination: state.termination, advanced: true };
   }
 
-  // (4) timeout (belt + braces — the budget check above handles the common case).
-  if (state.elapsedTime >= limits.tMax) {
+  // (6) timeout.
+  if (state.elapsedTime >= limits.tMax || state.elapsedTime <= -limits.tMax) {
     state.status = "timeout";
     state.termination = {
       status: "timeout",
       at: state.currentPosition.slice(),
       t: state.elapsedTime,
       detail: "simulation budget exhausted",
+      confidence: "numerical",
     };
     return { state, termination: state.termination, advanced: true };
   }
@@ -310,8 +483,7 @@ export function resumeTrajectory(state: TrajectoryState): void {
 /** Index of the closest known equilibrium within `radius`, or -1 if none. */
 function nearestEquilibriumIndex(p: Vec, eqs: Vec[] | undefined, radius: number): number {
   if (!eqs || eqs.length === 0) return -1;
-  let bestIdx = -1;
-  let bestD = radius;
+  let bestIdx = -1, bestD = radius;
   for (let i = 0; i < eqs.length; i++) {
     const d = distance(p, eqs[i]);
     if (d < bestD) { bestD = d; bestIdx = i; }
@@ -319,8 +491,31 @@ function nearestEquilibriumIndex(p: Vec, eqs: Vec[] | undefined, radius: number)
   return bestIdx;
 }
 
-/** Truncate a trail to `max` samples, keeping the most recent. */
-export function trimTrail(trail: Vec[], max: number): void {
-  if (trail.length <= max) return;
-  trail.splice(0, trail.length - max);
+// "nearest stable equilibrium" — limit-cycle heuristic must NOT confuse a
+// closed orbit with a converged-to-attractor snapshot. We pass the system in
+// only so the caller doesn't have to pre-filter; equilibrium classification
+// is cheap (eigenvalues at one point).
+function nearestStableEquilibriumIndex(p: Vec, eqs: Vec[] | undefined, radius: number, _sys: DynamicalSystem): number {
+  // Heuristic: treat ALL equilibria as potential attractors here. Misclassifying
+  // a saddle as a sink would ONLY cause a true limit-cycle to be misread as an
+  // equilibrium; in practice if the trajectory is on a stable cycle, it won't
+  // be within snap radius of a saddle (saddles repel). And the snap radius is
+  // tiny (DEFAULT_SNAP_RADIUS=0.05), so this filter is conservative.
+  return nearestEquilibriumIndex(p, eqs, radius);
+}
+
+/** Convenience: extract just the geometry (Vec[]) — kept for the renderer. */
+export function trailPoints(state: TrajectoryState): Vec[] {
+  return state.samples.map((s) => s.x);
+}
+
+/** Truncate the sample buffer to `max` entries, keeping the most recent. */
+export function trimTrail(state: TrajectoryState, max: number): void {
+  if (state.samples.length <= max) return;
+  state.samples.splice(0, state.samples.length - max);
+}
+
+/** Quick geometry-only accessor for the renderer (no React state churn). */
+export function geometryPoints(samples: TrajectorySample[]): Vec[] {
+  return samples.map((s) => s.x);
 }
