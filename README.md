@@ -17,7 +17,7 @@ symbolic calculus, and an AST→GLSL compiler). No two engines, no `eval`.
 
 ## Workspaces
 
-The top navigation switches between six workspaces:
+The top navigation switches between nine workspaces:
 
 ### 📈 Calculator — 2D & 3D graphing (Desmos-style)
 - **2D:** plot `y = f(x)`, multiple expressions with color + visibility, pan/zoom,
@@ -61,6 +61,31 @@ The top navigation switches between six workspaces:
 - **Grab & deform:** pull the surface, inflate, twist, random deform — all
   topology-preserving. Spin in space, wireframe, color modes.
 
+### 🌀 Dynamics — dynamical systems & phase portraits
+- Type an autonomous system `ẋ = f(x,y)`, `ẏ = g(x,y)` (or pick a preset:
+  rotation, damped oscillator, saddle, Van der Pol, pendulum, spiral sink).
+- **Vector field**, pan/zoom navigable plane, and **equilibria colored by
+  stability** (stable/unstable node, spiral, saddle, center — from the Jacobian
+  spectrum).
+- **Trajectory animation:** click a *start point* and a particle flows along the
+  field (RK4) to its *end point* — the equilibrium / singularity it converges to.
+  Play/pause + speed.
+
+### 🔬 Inspector — mathematical microscope
+- Select an object (expression, matrix, vector, topological surface) and get a
+  typed report: structure/AST, classification, domain, calculus (`f'`, `f''`,
+  `∇`, Hessian, `∇²`), roots & critical points; matrix rank/det/eigenstructure/
+  decompositions/conditioning/subspaces + 2×2 geometric action.
+- Every value is tagged **exact / symbolic / numerical / estimated / inferred**,
+  with navigable related objects and honest assumptions/limits. Capability-driven.
+
+### 📓 Notebook — reproducible experiments
+- A document of cells (markdown / parameter / expression / analysis) whose outputs
+  are **derived deterministically** from the source; parameters propagate through a
+  dependency graph and downstream analyses recompute.
+- Undo/redo, snapshots, localStorage autosave, and import/export as
+  `.mathsim.json` (declarative, schema-validated, no `eval`). Bundled examples.
+
 ### 📖 Docs — built-in manual
 - Bilingual (English / Español) manual explaining every workspace and its
   underlying mathematics, with formulas typeset by **KaTeX**.
@@ -69,17 +94,32 @@ The top navigation switches between six workspaces:
 
 ## Shared math core (`src/mathlab/`)
 
-The correctness-critical layer, unit-tested (112 tests total):
+The correctness-critical layer, unit-tested (**860 tests**), all consuming one AST:
 
 - `core/` — `lexer` → `parser` → `ast`, real `eval` (whitelisted functions,
-  **never `eval`/`Function`**), `simplify`, `print`, and `complexGlsl`
-  (AST → GLSL complex arithmetic).
-- `calculus/derivative` — symbolic differentiation (chain/product/quotient/power).
-- `analysis/` — numeric `roots` (bisection + Newton) and `integrate` (Simpson).
-- `graph/scene` — turns expression lines into functions, sliders, and plots.
+  **never `eval`/`Function`**), `simplify`, `print`, `complexGlsl` (AST → GLSL),
+  structured `errors`, seeded `rng`, central tolerances.
+- `calculus/` — symbolic differentiation, Taylor, gradient/Hessian/Jacobian/Laplacian.
+- `analysis/` + `numeric/` — roots (bisection/Newton), integration (Simpson +
+  adaptive), limits.
+- `linear/` — matrix ops, LU/QR/Cholesky/**SVD**, eigenvalues/eigenvectors
+  (symmetric Jacobi + general QR), least squares, subspaces, conditioning.
+- `ode/` — Euler/Heun/RK2/RK4 + adaptive RKF45 with metadata.
+- `dynamics/` — systems, equilibria, Jacobian **stability** (continuous & discrete),
+  trajectories.
+- `optimization/` — golden-section, gradient descent, Newton, critical-point classify.
+- `probability/` + `statistics/` — distributions + seeded sampling + Monte Carlo;
+  dataset, descriptives, regression.
+- `numberTheory/` — exact **bigint** arithmetic, primality, factorization, φ, μ, Collatz.
+- `units/` — dimensional quantities, conversion, constants, uncertainty.
+- `complex/` — first-class complex scalars, `Node → Complex` eval, Cauchy–Riemann.
+- `pde/` — 1D heat & wave, 2D Laplace/Poisson (finite differences).
+- `special/` — Gamma, log-Gamma, erf.
 
-The same parsed AST feeds the graphing calculator **and** the fractal shaders —
-that is the core design principle.
+The `inspector/` (React-free analysis engine) and `experiment/` (notebook document
+model + safe serialization) layers sit above the kernel. The same parsed AST feeds
+the calculator, the fractal shaders, and every analysis — that is the core design
+principle: **one engine, no duplicates, no `eval`.**
 
 ---
 
@@ -99,15 +139,19 @@ that is the core design principle.
 
 ```
 src/
-  mathlab/            shared math core (lexer, parser, AST, eval, calculus, analysis)
-  fractals/           fractal registry + types
-  webgl/              WebGL renderer + AST→GLSL custom-shader builder
-  graph/              graphing state + slider config
-  bloch/              qubit math + state
-  fourd/              4D vectors, polytopes, parametric surfaces
-  topo/               topology surfaces + mesh + morph
-  components/         React UI per workspace (graph, bloch, fourd, topo, docs, …)
-  App.tsx             top-level workspace switcher
+  mathlab/     shared math core: core, calculus, analysis, numeric, linear, ode,
+               dynamics, optimization, probability, statistics, numberTheory,
+               units, complex, pde, special, symbolic
+  inspector/   React-free inspection engine (types, capabilities, inspect/*)
+  experiment/  notebook document model, execution engine, safe serialization
+  fractals/    fractal registry + types
+  webgl/       WebGL renderer + AST→GLSL custom-shader builder
+  graph/       graphing state + slider config
+  bloch/       qubit math + state       fourd/  4D vectors, polytopes, surfaces
+  topo/        topology surfaces + mesh + morph
+  components/  React UI per workspace (graph, bloch, fourd, topo, dynamics,
+               inspector, notebook, docs, …)
+  App.tsx      top-level workspace switcher
 ```
 
 ---
