@@ -33,7 +33,7 @@ describe("identifyAttractors", () => {
     const a = identifyAttractors(stableNode, { equilibria: [[0, 0]] });
     expect(a.length).toBe(1);
     expect(a[0].kind).toBe("stable-equilibrium");
-    expect(a[0].point).toEqual([0, 0]);
+    if (a[0].kind === "stable-equilibrium") expect(a[0].point).toEqual([0, 0]);
   });
   it("returns nothing for a pure saddle system", () => {
     const a = identifyAttractors(saddle, { equilibria: [[0, 0]] });
@@ -52,7 +52,7 @@ describe("identifyAttractors", () => {
     });
     expect(a.length).toBe(2);
     expect(a[1].kind).toBe("limit-cycle");
-    expect(a[1].radius).toBe(1);
+    if (a[1].kind === "limit-cycle") expect(a[1].radius).toBe(1);
   });
   it("preserves input order (stable eq first, then limit cycles)", () => {
     const a = identifyAttractors(stableSpiral, {
