@@ -688,11 +688,14 @@ export function DynamicsView() {
 
     // Compare mode: click 1 sets P₁, click 2 sets P₂ and computes Δ(t); click 3 restarts.
     if (modeRef.current === "compare") {
-      setComparePts((prev) => {
-        if (!prev.p1 || prev.p2) { setCompareData(null); return { p1: start, p2: null }; }
-        runComparison(prev.p1, start);
-        return { p1: prev.p1, p2: start };
-      });
+      const cur = comparePtsRef.current;
+      if (!cur.p1 || cur.p2) {
+        setCompareData(null);
+        setComparePts({ p1: start, p2: null });
+      } else {
+        setComparePts({ p1: cur.p1, p2: start });
+        runComparison(cur.p1, start);
+      }
       return;
     }
 

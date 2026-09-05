@@ -12,6 +12,7 @@ import { MAX_ODE_STEPS } from "../core/constants.ts";
 import { solveODE } from "../ode/registry.ts";
 import type { ODEOptions, ODEFn } from "../ode/types.ts";
 import type { Vec } from "../linear/vector.ts";
+import type { IntegrationDirection } from "./lifecycle.ts";
 import { evalField, type DynamicalSystem } from "./system.ts";
 
 export interface SimulateOptions extends ODEOptions {
@@ -27,8 +28,6 @@ export interface SimulateOptions extends ODEOptions {
    *  sign-flipped field (no second RK4). Default "forward". */
   direction?: IntegrationDirection;
 }
-
-export type IntegrationDirection = "forward" | "backward";
 
 const DEFAULT_DISCRETE_STEPS = 100;
 
