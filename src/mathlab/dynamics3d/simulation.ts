@@ -30,7 +30,13 @@ export interface SimulationOptions {
   units?: UnitSystem;
   /** Bodies beyond this radius from the origin are marked escaped (0 = disabled). */
   domainRadius?: number;
+  /** Max recorded history frames for the time scrubber (ring buffer). Default 6000. */
+  maxHistory?: number;
 }
+
+/** A per-body snapshot recorded each step so time can be scrubbed (§ "recording"). */
+export interface BodyFrame { id: string; p: Vec3; v: Vec3; a: Vec3; active: boolean; }
+export interface HistoryFrame { t: number; steps: number; bodies: BodyFrame[]; }
 
 export interface Simulation {
   bodies: Body3D[];
@@ -52,6 +58,46 @@ export interface Simulation {
   /** Deep snapshot of the initial bodies for reset(). */
   readonly _initial: Body3D[];
   events: string[];
+  /** Recorded state per step (ring-bounded) — enables scrubbing back/forward in time. */
+  history: HistoryFrame[];
+  maxHistory: number;
+}
+
+/** Snapshot the current state for the history recorder. */
+function snapshot(sim: Simulation): HistoryFrame {
+  return {
+    t: sim.time, steps: sim.steps,
+    bodies: sim.bodies.map((b) => ({
+      id: b.id, p: [...b.position] as Vec3, v: [...b.velocity] as Vec3,
+      a: [...b.acceleration] as Vec3, active: b.active,
+    })),
+  };
+}
+function record(sim: Simulation): void {
+  sim.history.push(snapshot(sim));
+  if (sim.history.length > sim.maxHistory) sim.history.splice(0, sim.history.length - sim.maxHistory);
+}
+
+/** Reconstruct the body list at a recorded frame (structure from sim, state from the
+ *  frame; bodies that did not yet exist at that frame are marked inactive). */
+export function frameToBodies(sim: Simulation, frame: HistoryFrame): Body3D[] {
+  const map = new Map(frame.bodies.map((fb) => [fb.id, fb]));
+  return sim.bodies.map((b) => {
+    const fb = map.get(b.id);
+    if (!fb) return { ...b, active: false };
+    return { ...b, position: [...fb.p] as Vec3, velocity: [...fb.v] as Vec3, acceleration: [...fb.a] as Vec3, active: fb.active };
+  });
+}
+
+/** A body's path from history up to `endIndex` (inclusive), last `length` frames. */
+export function historyTrail(sim: Simulation, bodyId: string, endIndex: number, length: number): Vec3[] {
+  const start = Math.max(0, endIndex - length + 1);
+  const out: Vec3[] = [];
+  for (let i = start; i <= endIndex && i < sim.history.length; i++) {
+    const fb = sim.history[i].bodies.find((x) => x.id === bodyId);
+    if (fb && fb.active) out.push([...fb.p] as Vec3);
+  }
+  return out;
 }
 
 const cloneBody = (b: Body3D): Body3D => ({
@@ -67,7 +113,7 @@ export function createSimulation(bodies: Body3D[], opts: SimulationOptions = {})
   const m = systemMetrics(bodies, params);
   const trails = new Map<string, Vec3[]>();
   for (const b of bodies) trails.set(b.id, [[...b.position] as Vec3]);
-  return {
+  const sim: Simulation = {
     bodies: bodies.map(cloneBody),
     params,
     integrator: opts.integrator ?? "verlet",
@@ -85,7 +131,11 @@ export function createSimulation(bodies: Body3D[], opts: SimulationOptions = {})
     initialMomentum: m.momentum,
     _initial: initial,
     events: [],
+    history: [],
+    maxHistory: opts.maxHistory ?? 6000,
   };
+  record(sim);
+  return sim;
 }
 
 /** Restore the simulation to its initial bodies/time (keeps params/settings). */
@@ -100,6 +150,8 @@ export function resetSimulation(sim: Simulation): void {
   sim.initialEnergy = m.total;
   sim.initialMomentum = m.momentum;
   sim.events = [];
+  sim.history = [];
+  record(sim);
 }
 
 /** Advance the physics by `substeps` × dt. No-op unless status is running/paused-forced. */
@@ -124,6 +176,7 @@ export function stepSimulation(sim: Simulation, substeps = 1, force = false): Si
     if (!checkNumericalSafety(sim)) return sim;      // sets status/termination
     applyDomain(sim);
     recordTrails(sim);
+    record(sim);
   }
   return sim;
 }

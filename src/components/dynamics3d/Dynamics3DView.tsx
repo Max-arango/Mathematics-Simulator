@@ -10,7 +10,7 @@ import { useEffect, useRef, useState } from "react";
 import { perspective, multiply, orbitViewAt, orbitBasis, type Mat4 } from "../graph/mat4.ts";
 import { norm } from "../../mathlab/linear/vector.ts";
 import {
-  createSimulation, stepSimulation, resetSimulation, report,
+  createSimulation, stepSimulation, resetSimulation, report, frameToBodies, historyTrail,
   type Simulation,
 } from "../../mathlab/dynamics3d/simulation.ts";
 import { makeScenario, SCENARIO_IDS, type ScenarioId } from "../../mathlab/dynamics3d/scenarios.ts";
@@ -59,6 +59,7 @@ export function Dynamics3DView() {
   // System / controls (React state → drives sim settings + sidebar).
   const [scenarioId, setScenarioId] = useState<ScenarioId>("planetary");
   const [playing, setPlaying] = useState(false);
+  const [playDir, setPlayDir] = useState<1 | -1>(1); // time direction: forward / reverse
   const [speed, setSpeed] = useState(1);
   const [dt, setDt] = useState(0.005);
   const [integrator, setIntegrator] = useState<Integrator>("verlet");
@@ -92,7 +93,9 @@ export function Dynamics3DView() {
 
   // Refs mirroring live control values for the (once-captured) rAF loop.
   const playRef = useRef(playing); playRef.current = playing;
+  const playDirRef = useRef(playDir); playDirRef.current = playDir;
   const speedRef = useRef(speed); speedRef.current = speed;
+  const playheadRef = useRef(-1); // -1 = live edge; else index into sim.history
   const vizRef = useRef(viz); vizRef.current = viz;
   const selRef = useRef(selectedId); selRef.current = selectedId;
   const fieldCtl = useRef({ density: fieldDensity, deformScale, vectorScale, deformRes, extent: fieldExtent });
@@ -105,6 +108,7 @@ export function Dynamics3DView() {
   const loadScenario = (id: ScenarioId) => {
     const sc = makeScenario(id);
     simRef.current = createSimulation(sc.bodies, { dt: sc.dt, integrator, collisionMode, trailLength });
+    playheadRef.current = -1;
     setScenarioId(id);
     setDt(sc.dt);
     setPlaying(false);
@@ -123,11 +127,31 @@ export function Dynamics3DView() {
     let raf = 0, acc = 0, lastUI = 0;
     const loop = (now: number) => {
       const sim = simRef.current;
-      if (playRef.current && sim.status !== "numericalFailure" && sim.status !== "completed") {
+      if (playRef.current) {
         acc += speedRef.current * SUBSTEPS_PER_UNIT;
         const n = Math.floor(acc);
         acc -= n;
-        if (n > 0) stepSimulation(sim, n, true);
+        if (n > 0) {
+          if (playDirRef.current === -1) {
+            // Reverse: rewind through recorded history.
+            let ph = playheadRef.current === -1 ? sim.history.length - 1 : playheadRef.current;
+            ph = Math.max(0, ph - n);
+            playheadRef.current = ph;
+            if (ph === 0) setPlaying(false); // hit the start of the recording
+          } else {
+            const end = sim.history.length - 1;
+            if (playheadRef.current !== -1 && playheadRef.current < end) {
+              // Replay recorded frames forward until we catch the live edge.
+              const ph = Math.min(end, playheadRef.current + n);
+              playheadRef.current = ph >= end ? -1 : ph;
+            } else if (sim.status !== "numericalFailure" && sim.status !== "completed") {
+              stepSimulation(sim, n, true); // live edge → simulate new frames
+              playheadRef.current = -1;
+            } else {
+              setPlaying(false); // at the live edge but can't advance further
+            }
+          }
+        }
       }
       // Fly: move the camera target with held keys (WASD/QE/space + arrows).
       const k = keys.current;
@@ -192,6 +216,11 @@ export function Dynamics3DView() {
     const sim = simRef.current;
     const P = (x: Vec3) => projectP(mvp, x[0], x[1], x[2], w, h);
     const EXT = fieldCtl.current.extent;
+    // Time scrubber: when the playhead is behind the live edge, render the recorded
+    // configuration at that frame (and reconstruct trails from history).
+    const ph = playheadRef.current;
+    const scrubbing = ph >= 0 && ph < sim.history.length - 1;
+    const bodies = scrubbing ? frameToBodies(sim, sim.history[ph]) : sim.bodies;
 
     // Grid on the z=0 plane.
     if (vizRef.current.grid) {
@@ -207,12 +236,12 @@ export function Dynamics3DView() {
       const n = fieldCtl.current.deformRes;
       // Bodies signature: recompute the sheet only when a source actually changes
       // (moved / mass / strength edited), not on every camera-only frame.
-      let sig = 0;
-      for (const b of sim.bodies) if (b.active) sig += b.position[0] + 2.1 * b.position[1] + 3.7 * b.mass + 5.3 * b.gravitationalStrength + (b.softening ?? 0);
+      let sig = scrubbing ? ph : 0;
+      for (const b of bodies) if (b.active) sig += b.position[0] + 2.1 * b.position[1] + 3.7 * b.mass + 5.3 * b.gravitationalStrength + (b.softening ?? 0);
       const key = `${n}|${EXT}|${fieldCtl.current.deformScale}|${sig}`;
       let cache = surfCache.current;
       if (!cache || cache.key !== key) {
-        const surf = potentialSurfaceZ(sim.bodies, sim.params, EXT, n, fieldCtl.current.deformScale, EXT);
+        const surf = potentialSurfaceZ(bodies, sim.params, EXT, n, fieldCtl.current.deformScale, EXT);
         let mz = 0;
         for (const row of surf) for (const v of row) if (v.z < mz) mz = v.z;
         cache = { key, surf, minZ: mz };
@@ -234,7 +263,7 @@ export function Dynamics3DView() {
 
     // Gravity field vectors (§8) — direction of acceleration at each grid point.
     if (vizRef.current.gravityField) {
-      const samples = sampleFieldGridZ(sim.bodies, sim.params, EXT, fieldCtl.current.density, 0);
+      const samples = sampleFieldGridZ(bodies, sim.params, EXT, fieldCtl.current.density, 0);
       let ref = 1e-6;
       for (const s of samples) if (s.mag > ref && Number.isFinite(s.mag)) ref = Math.max(ref, s.mag);
       for (const s of samples) {
@@ -257,7 +286,7 @@ export function Dynamics3DView() {
       ctx.strokeStyle = "rgba(52,211,153,0.5)"; ctx.lineWidth = 1;
       for (let k = 0; k < seeds; k++) {
         const th = (2 * Math.PI * k) / seeds;
-        const line = traceFieldLine([Math.cos(th) * R, Math.sin(th) * R, 0], sim.bodies, sim.params, { steps: 80, ds: 0.5, bound: EXT * 2 });
+        const line = traceFieldLine([Math.cos(th) * R, Math.sin(th) * R, 0], bodies, sim.params, { steps: 80, ds: 0.5, bound: EXT * 2 });
         ctx.beginPath();
         let started = false;
         for (const p of line) {
@@ -277,10 +306,10 @@ export function Dynamics3DView() {
       axis(ctx, P([0, 0, 0]), P([0, 0, L]), "#60a5fa", "Z");
     }
 
-    // Trails.
+    // Trails (reconstructed from history while scrubbing, so the path matches the frame).
     if (vizRef.current.trails) {
-      for (const b of sim.bodies) {
-        const t = sim.trails.get(b.id);
+      for (const b of bodies) {
+        const t = scrubbing ? historyTrail(sim, b.id, ph, sim.trailLength) : sim.trails.get(b.id);
         if (!t || t.length < 2) continue;
         ctx.strokeStyle = hexA(TYPE_COLOR[b.type], 0.5); ctx.lineWidth = 1.2;
         ctx.beginPath();
@@ -296,7 +325,7 @@ export function Dynamics3DView() {
 
     // Bodies — painter's order (far first). cw larger = farther.
     if (vizRef.current.bodies) {
-      const drawn = sim.bodies
+      const drawn = bodies
         .filter((b) => b.active)
         .map((b) => ({ b, s: P(b.position) }))
         .filter((o): o is { b: Body3D; s: { x: number; y: number; cw: number } } => o.s !== null)
@@ -364,8 +393,10 @@ export function Dynamics3DView() {
     const t = target.current;
     const mvp = multiply(perspective(Math.PI / 4, (w / h) || 1, 0.1, 5000), orbitViewAt(yaw.current, pitch.current, dist.current, t[0], t[1], t[2]));
     const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    const sim = simRef.current, ph = playheadRef.current;
+    const list = ph >= 0 && ph < sim.history.length - 1 ? frameToBodies(sim, sim.history[ph]) : sim.bodies;
     let best: string | null = null, bestD = 14;
-    for (const b of simRef.current.bodies) {
+    for (const b of list) {
       if (!b.active) continue;
       const s = projectP(mvp, b.position[0], b.position[1], b.position[2], w, h);
       if (!s) continue;
@@ -412,7 +443,14 @@ export function Dynamics3DView() {
 
   const sim = simRef.current;
   const rep = report(sim);
-  const selected = sim.bodies.find((b) => b.id === selectedId) ?? null;
+  // Time-scrubber render state.
+  const histEnd = sim.history.length - 1;
+  const dispIndex = playheadRef.current === -1 ? histEnd : Math.min(playheadRef.current, histEnd);
+  const scrubbingNow = playheadRef.current !== -1 && playheadRef.current < histEnd;
+  const dispTime = sim.history[dispIndex]?.t ?? sim.time;
+  const dispBodies = scrubbingNow ? frameToBodies(sim, sim.history[dispIndex]) : sim.bodies;
+  const selected = dispBodies.find((b) => b.id === selectedId) ?? null;
+  const setPlayhead = (i: number) => { playheadRef.current = i >= histEnd ? -1 : Math.max(0, i); forceUI((n) => n + 1); };
 
   const btn = "rounded px-2 py-1 text-xs";
   const chip = (on: boolean) => `${btn} ${on ? "bg-cyan-500/20 text-cyan-200" : "bg-white/5 text-slate-400 hover:bg-white/10"}`;
@@ -437,10 +475,30 @@ export function Dynamics3DView() {
         </div>
 
         <div className="rounded bg-black/30 p-2">
+          {/* transport: reverse / forward playback (a recording you can scrub) */}
+          <div className="mb-1 flex gap-1">
+            <button title="Play backward in time"
+              onClick={() => { if (playing && playDir === -1) setPlaying(false); else { setPlayDir(-1); setPlaying(true); } }}
+              className={`${btn} flex-1 font-medium ${playing && playDir === -1 ? "bg-fuchsia-500/20 text-fuchsia-200" : "bg-white/5 text-slate-300 hover:bg-white/10"}`}>◀ Rev</button>
+            <button title="Play forward in time"
+              onClick={() => { if (playing && playDir === 1) setPlaying(false); else { setPlayDir(1); setPlaying(true); } }}
+              className={`${btn} flex-1 font-medium ${playing && playDir === 1 ? "bg-fuchsia-500/20 text-fuchsia-200" : "bg-cyan-500/15 text-cyan-200"}`}>{playing && playDir === 1 ? "❚❚ Pause" : "▶ Play"}</button>
+            <button onClick={() => { resetSimulation(simRef.current); playheadRef.current = -1; setPlaying(false); forceUI((n) => n + 1); }} className={`${btn} bg-white/5 hover:bg-white/10`} title="Restart from initial state">↻</button>
+          </div>
+          {/* frame stepping + jump to live edge */}
           <div className="mb-1.5 flex gap-1">
-            <button onClick={() => setPlaying((p) => !p)} className={`${btn} flex-1 font-medium ${playing ? "bg-fuchsia-500/20 text-fuchsia-200" : "bg-cyan-500/15 text-cyan-200"}`}>{playing ? "❚❚ Pause" : "▶ Play"}</button>
-            <button onClick={() => { stepSimulation(simRef.current, 1, true); forceUI((n) => n + 1); }} className={`${btn} bg-white/5 hover:bg-white/10`} title="Single physics step">⏭ Step</button>
-            <button onClick={() => { resetSimulation(simRef.current); setPlaying(false); forceUI((n) => n + 1); }} className={`${btn} bg-white/5 hover:bg-white/10`}>↻ Reset</button>
+            <button onClick={() => { setPlaying(false); setPlayhead(dispIndex - 1); }} className={`${btn} flex-1 bg-white/5 hover:bg-white/10`} title="Step one frame back">⟨ frame</button>
+            <button onClick={() => { setPlaying(false); if (dispIndex < histEnd) setPlayhead(dispIndex + 1); else { stepSimulation(simRef.current, 1, true); forceUI((n) => n + 1); } }} className={`${btn} flex-1 bg-white/5 hover:bg-white/10`} title="Step one frame forward">frame ⟩</button>
+            <button onClick={() => { playheadRef.current = -1; forceUI((n) => n + 1); }} className={`${btn} bg-white/5 hover:bg-white/10 ${scrubbingNow ? "" : "opacity-40"}`} title="Jump to the live edge">Live ⏭</button>
+          </div>
+          {/* timeline scrubber */}
+          <div className="mb-1.5">
+            <input type="range" className="w-full" min={0} max={Math.max(0, histEnd)} step={1} value={dispIndex}
+              onChange={(e) => { setPlaying(false); setPlayhead(Number(e.target.value)); }} />
+            <div className="flex justify-between font-mono text-[10px] text-slate-500">
+              <span>t = {dispTime.toFixed(3)}{scrubbingNow ? " (scrubbing)" : " (live)"}</span>
+              <span>frame {dispIndex}/{Math.max(0, histEnd)}</span>
+            </div>
           </div>
           <Range label="speed" value={speed} min={0.1} max={10} step={0.1} onChange={setSpeed} fmt={(v) => `${v.toFixed(1)}x`} />
           <Range label="dt" value={dt} min={0.001} max={0.02} step={0.001} onChange={setDt} fmt={(v) => v.toFixed(3)} />
@@ -553,10 +611,10 @@ export function Dynamics3DView() {
               <p className="text-[9px] text-slate-500">effectiveMass = {effectiveMass(selected).toPrecision(4)} (experimental source term)</p>
             </div>
             <div className="mt-1.5 border-t border-white/10 pt-1">
-              <p className="text-[10px] text-slate-500">Φ at body = {potentialAt(selected.position, sim.bodies, sim.params, selected.id).toExponential(3)}</p>
-              <p className="text-[10px] text-slate-500">|g| = {norm(fieldAt(selected.position, sim.bodies, sim.params, selected.id)).toExponential(3)}</p>
+              <p className="text-[10px] text-slate-500">Φ at body = {potentialAt(selected.position, dispBodies, sim.params, selected.id).toExponential(3)}</p>
+              <p className="text-[10px] text-slate-500">|g| = {norm(fieldAt(selected.position, dispBodies, sim.params, selected.id)).toExponential(3)}</p>
               <p className="mt-1 text-[10px] font-semibold text-slate-400">Acceleration sources</p>
-              {accelerationSources(selected, sim.bodies, sim.params).slice(0, 4).map((s) => (
+              {accelerationSources(selected, dispBodies, sim.params).slice(0, 4).map((s) => (
                 <div key={s.id} className="flex justify-between font-mono text-[10px]"><span className="text-slate-400">{s.name}</span><span>{(s.share * 100).toFixed(1)}%</span></div>
               ))}
             </div>

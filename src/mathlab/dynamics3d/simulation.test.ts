@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { norm } from "../linear/vector.ts";
 import type { Body3D, Vec3 } from "./types.ts";
-import { createSimulation, stepSimulation, resetSimulation, report } from "./simulation.ts";
+import { createSimulation, stepSimulation, resetSimulation, report, frameToBodies, historyTrail } from "./simulation.ts";
 import { momentum } from "./metrics.ts";
 
 let _n = 0;
@@ -99,6 +99,54 @@ describe("numerical safety (§33)", () => {
     const t = sim.time;
     stepSimulation(sim, 5, true);
     expect(sim.time).toBe(t); // no further advance
+  });
+});
+
+describe("time history / scrubbing", () => {
+  it("records one frame per step (plus the initial frame)", () => {
+    const sim = createSimulation([body({ position: [0, 0, 0], mass: 100 }), body({ position: [5, 0, 0], velocity: [0, 4, 0], mass: 1 })], { dt: 0.01 });
+    expect(sim.history.length).toBe(1); // initial
+    stepSimulation(sim, 20, true);
+    expect(sim.history.length).toBe(21);
+    expect(sim.history[0].t).toBe(0);
+    expect(sim.history[20].t).toBeCloseTo(0.2, 9);
+  });
+
+  it("frameToBodies reconstructs the state at a past frame", () => {
+    const sim = createSimulation([body({ position: [3, 0, 0], velocity: [0, 1, 0], mass: 1 }), body({ position: [-3, 0, 0], velocity: [0, -1, 0], mass: 1 })], { dt: 0.01 });
+    stepSimulation(sim, 30, true);
+    const past = frameToBodies(sim, sim.history[10]);
+    // matches the recorded snapshot exactly
+    expect(past[0].position).toEqual(sim.history[10].bodies[0].p);
+    // and differs from the current (live) position
+    expect(past[0].position).not.toEqual(sim.bodies[0].position);
+  });
+
+  it("frame 0 equals the initial condition", () => {
+    const sim = createSimulation([body({ position: [7, 2, 0], velocity: [0, 3, 0], mass: 1 })], { dt: 0.01 });
+    stepSimulation(sim, 40, true);
+    expect(sim.history[0].bodies[0].p).toEqual([7, 2, 0]);
+  });
+
+  it("historyTrail returns the path up to an index", () => {
+    const sim = createSimulation([body({ position: [0, 0, 0], mass: 100 }), body({ position: [5, 0, 0], velocity: [0, 4, 0], mass: 1 })], { dt: 0.01 });
+    stepSimulation(sim, 50, true);
+    const trail = historyTrail(sim, sim.bodies[1].id, 30, 1000);
+    expect(trail.length).toBe(31); // frames 0..30 inclusive
+  });
+
+  it("history is ring-bounded by maxHistory", () => {
+    const sim = createSimulation([body({ position: [0, 0, 0], mass: 1 })], { dt: 0.01, maxHistory: 25 });
+    stepSimulation(sim, 100, true);
+    expect(sim.history.length).toBe(25);
+  });
+
+  it("reset clears history back to a single initial frame", () => {
+    const sim = createSimulation([body({ position: [1, 0, 0], velocity: [0, 1, 0], mass: 1 })], { dt: 0.01 });
+    stepSimulation(sim, 30, true);
+    resetSimulation(sim);
+    expect(sim.history.length).toBe(1);
+    expect(sim.history[0].bodies[0].p).toEqual([1, 0, 0]);
   });
 });
 
