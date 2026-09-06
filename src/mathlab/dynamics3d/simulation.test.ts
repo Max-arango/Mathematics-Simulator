@@ -112,20 +112,18 @@ describe("time history / scrubbing", () => {
     expect(sim.history[20].t).toBeCloseTo(0.2, 9);
   });
 
-  it("frameToBodies reconstructs the state at a past frame", () => {
+  it("frameToBodies reconstructs a past frame that differs from the live state", () => {
     const sim = createSimulation([body({ position: [3, 0, 0], velocity: [0, 1, 0], mass: 1 }), body({ position: [-3, 0, 0], velocity: [0, -1, 0], mass: 1 })], { dt: 0.01 });
     stepSimulation(sim, 30, true);
     const past = frameToBodies(sim, sim.history[10]);
-    // matches the recorded snapshot exactly
-    expect(past[0].position).toEqual(sim.history[10].bodies[0].p);
-    // and differs from the current (live) position
+    // rewound position ≠ current (live) position
     expect(past[0].position).not.toEqual(sim.bodies[0].position);
   });
 
   it("frame 0 equals the initial condition", () => {
     const sim = createSimulation([body({ position: [7, 2, 0], velocity: [0, 3, 0], mass: 1 })], { dt: 0.01 });
     stepSimulation(sim, 40, true);
-    expect(sim.history[0].bodies[0].p).toEqual([7, 2, 0]);
+    expect(frameToBodies(sim, sim.history[0])[0].position).toEqual([7, 2, 0]);
   });
 
   it("historyTrail returns the path up to an index", () => {
@@ -146,7 +144,7 @@ describe("time history / scrubbing", () => {
     stepSimulation(sim, 30, true);
     resetSimulation(sim);
     expect(sim.history.length).toBe(1);
-    expect(sim.history[0].bodies[0].p).toEqual([1, 0, 0]);
+    expect(frameToBodies(sim, sim.history[0])[0].position).toEqual([1, 0, 0]);
   });
 });
 

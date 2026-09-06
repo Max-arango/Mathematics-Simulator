@@ -65,6 +65,7 @@ export function Dynamics3DView() {
   const [integrator, setIntegrator] = useState<Integrator>("verlet");
   const [collisionMode, setCollisionMode] = useState<CollisionMode>("ignore");
   const [trailLength, setTrailLength] = useState(400);
+  const [historyCap, setHistoryCap] = useState(20000); // recorded frames for time scrubbing
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [viz, setViz] = useState({
     bodies: true, trails: true, axes: true, grid: true,
@@ -107,7 +108,7 @@ export function Dynamics3DView() {
   // Load a scenario (also on dt change we just mutate sim.dt live).
   const loadScenario = (id: ScenarioId) => {
     const sc = makeScenario(id);
-    simRef.current = createSimulation(sc.bodies, { dt: sc.dt, integrator, collisionMode, trailLength });
+    simRef.current = createSimulation(sc.bodies, { dt: sc.dt, integrator, collisionMode, trailLength, maxHistory: historyCap });
     playheadRef.current = -1;
     setScenarioId(id);
     setDt(sc.dt);
@@ -121,6 +122,11 @@ export function Dynamics3DView() {
   useEffect(() => { simRef.current.integrator = integrator; }, [integrator]);
   useEffect(() => { simRef.current.collisionMode = collisionMode; }, [collisionMode]);
   useEffect(() => { simRef.current.trailLength = trailLength; }, [trailLength]);
+  useEffect(() => {
+    const sim = simRef.current;
+    sim.maxHistory = historyCap;
+    if (sim.history.length > historyCap) sim.history.splice(0, sim.history.length - historyCap);
+  }, [historyCap]);
 
   // ── animation + physics loop ───────────────────────────────────────────────
   useEffect(() => {
@@ -503,6 +509,7 @@ export function Dynamics3DView() {
           <Range label="speed" value={speed} min={0.1} max={10} step={0.1} onChange={setSpeed} fmt={(v) => `${v.toFixed(1)}x`} />
           <Range label="dt" value={dt} min={0.001} max={0.02} step={0.001} onChange={setDt} fmt={(v) => v.toFixed(3)} />
           <Range label="trail" value={trailLength} min={50} max={2000} step={50} onChange={setTrailLength} fmt={(v) => String(v)} />
+          <Range label="history" value={historyCap} min={2000} max={120000} step={2000} onChange={setHistoryCap} fmt={(v) => (v >= 1000 ? `${Math.round(v / 1000)}k` : String(v))} />
           <div className="mt-1 flex items-center gap-1">
             <span className="w-12 text-[11px] text-slate-500">solver</span>
             {(["verlet", "rk4"] as Integrator[]).map((m) => (

@@ -10,6 +10,7 @@
 //                    view scales that; it must NOT change dt (would change the physics).
 import { distance, norm } from "../linear/vector.ts";
 import { step, type Integrator } from "./integrators.ts";
+import { accelerations } from "./field.ts";
 import { effectiveMass } from "./potential.ts";
 import { systemMetrics, momentum, relativeDrift, type SystemMetrics } from "./metrics.ts";
 import {
@@ -30,13 +31,18 @@ export interface SimulationOptions {
   units?: UnitSystem;
   /** Bodies beyond this radius from the origin are marked escaped (0 = disabled). */
   domainRadius?: number;
-  /** Max recorded history frames for the time scrubber (ring buffer). Default 6000. */
+  /** Max recorded history frames for the time scrubber (ring buffer). Default 20000. */
   maxHistory?: number;
 }
 
-/** A per-body snapshot recorded each step so time can be scrubbed (§ "recording"). */
-export interface BodyFrame { id: string; p: Vec3; v: Vec3; a: Vec3; active: boolean; }
-export interface HistoryFrame { t: number; steps: number; bodies: BodyFrame[]; }
+/**
+ * A per-step snapshot for the time scrubber, stored COMPACTLY: `ids` names the bodies
+ * and `data` is a flat Float32Array of 7 values each — [px,py,pz,vx,vy,vz,active].
+ * Float32 (not objects) makes long recordings affordable (≈4× lighter); acceleration
+ * is recomputed on read (frameToBodies) rather than stored.
+ */
+export interface HistoryFrame { t: number; steps: number; ids: string[]; data: Float32Array; }
+const FRAME_STRIDE = 7;
 
 export interface Simulation {
   bodies: Body3D[];
@@ -63,30 +69,47 @@ export interface Simulation {
   maxHistory: number;
 }
 
-/** Snapshot the current state for the history recorder. */
+/** Snapshot the current state for the history recorder (compact Float32 layout). */
 function snapshot(sim: Simulation): HistoryFrame {
-  return {
-    t: sim.time, steps: sim.steps,
-    bodies: sim.bodies.map((b) => ({
-      id: b.id, p: [...b.position] as Vec3, v: [...b.velocity] as Vec3,
-      a: [...b.acceleration] as Vec3, active: b.active,
-    })),
-  };
+  const n = sim.bodies.length;
+  const ids = new Array<string>(n);
+  const data = new Float32Array(n * FRAME_STRIDE);
+  for (let i = 0; i < n; i++) {
+    const b = sim.bodies[i];
+    ids[i] = b.id;
+    const o = i * FRAME_STRIDE;
+    data[o] = b.position[0]; data[o + 1] = b.position[1]; data[o + 2] = b.position[2];
+    data[o + 3] = b.velocity[0]; data[o + 4] = b.velocity[1]; data[o + 5] = b.velocity[2];
+    data[o + 6] = b.active ? 1 : 0;
+  }
+  return { t: sim.time, steps: sim.steps, ids, data };
 }
 function record(sim: Simulation): void {
   sim.history.push(snapshot(sim));
   if (sim.history.length > sim.maxHistory) sim.history.splice(0, sim.history.length - sim.maxHistory);
 }
 
-/** Reconstruct the body list at a recorded frame (structure from sim, state from the
- *  frame; bodies that did not yet exist at that frame are marked inactive). */
+/** Reconstruct the body list at a recorded frame (structure from sim, position/velocity
+ *  from the frame; acceleration recomputed at that configuration; bodies not yet present
+ *  in the frame are marked inactive). */
 export function frameToBodies(sim: Simulation, frame: HistoryFrame): Body3D[] {
-  const map = new Map(frame.bodies.map((fb) => [fb.id, fb]));
-  return sim.bodies.map((b) => {
-    const fb = map.get(b.id);
-    if (!fb) return { ...b, active: false };
-    return { ...b, position: [...fb.p] as Vec3, velocity: [...fb.v] as Vec3, acceleration: [...fb.a] as Vec3, active: fb.active };
+  const col = new Map<string, number>();
+  frame.ids.forEach((id, i) => col.set(id, i));
+  const out = sim.bodies.map((b) => {
+    const i = col.get(b.id);
+    if (i === undefined) return { ...b, active: false };
+    const o = i * FRAME_STRIDE;
+    return {
+      ...b,
+      position: [frame.data[o], frame.data[o + 1], frame.data[o + 2]] as Vec3,
+      velocity: [frame.data[o + 3], frame.data[o + 4], frame.data[o + 5]] as Vec3,
+      acceleration: [0, 0, 0] as Vec3,
+      active: frame.data[o + 6] > 0.5,
+    };
   });
+  const acc = accelerations(out, sim.params); // field at the historical configuration
+  for (let k = 0; k < out.length; k++) out[k].acceleration = acc[k];
+  return out;
 }
 
 /** A body's path from history up to `endIndex` (inclusive), last `length` frames. */
@@ -94,8 +117,11 @@ export function historyTrail(sim: Simulation, bodyId: string, endIndex: number, 
   const start = Math.max(0, endIndex - length + 1);
   const out: Vec3[] = [];
   for (let i = start; i <= endIndex && i < sim.history.length; i++) {
-    const fb = sim.history[i].bodies.find((x) => x.id === bodyId);
-    if (fb && fb.active) out.push([...fb.p] as Vec3);
+    const fr = sim.history[i];
+    const c = fr.ids.indexOf(bodyId);
+    if (c < 0) continue;
+    const o = c * FRAME_STRIDE;
+    if (fr.data[o + 6] > 0.5) out.push([fr.data[o], fr.data[o + 1], fr.data[o + 2]]);
   }
   return out;
 }
@@ -132,7 +158,7 @@ export function createSimulation(bodies: Body3D[], opts: SimulationOptions = {})
     _initial: initial,
     events: [],
     history: [],
-    maxHistory: opts.maxHistory ?? 6000,
+    maxHistory: opts.maxHistory ?? 20000,
   };
   record(sim);
   return sim;
