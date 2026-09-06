@@ -12,6 +12,7 @@ import { useStore, type AppMode } from "./store.ts";
 
 // KaTeX-heavy views are lazy-loaded to keep the initial bundle lean.
 const DocsView = lazy(() => import("./components/docs/DocsView.tsx").then((m) => ({ default: m.DocsView })));
+const Dynamics3DView = lazy(() => import("./components/dynamics3d/Dynamics3DView.tsx").then((m) => ({ default: m.Dynamics3DView })));
 const InspectorView = lazy(() => import("./components/inspector/InspectorView.tsx").then((m) => ({ default: m.InspectorView })));
 const NotebookView = lazy(() => import("./components/notebook/NotebookView.tsx").then((m) => ({ default: m.NotebookView })));
 
@@ -41,6 +42,7 @@ function ModeNav() {
     { id: "fourd", label: "4D" },
     { id: "topo", label: "Topology" },
     { id: "dynamics", label: "Dynamics" },
+    { id: "dynamics3d", label: "Dynamics 3D" },
     { id: "inspector", label: "Inspector" },
     { id: "notebook", label: "Notebook" },
     { id: "docs", label: "Docs" },
@@ -85,6 +87,10 @@ export function App() {
         <TopoView />
       ) : appMode === "dynamics" ? (
         <DynamicsView />
+      ) : appMode === "dynamics3d" ? (
+        <Suspense fallback={<div className="p-8 text-sm text-slate-500">Loading…</div>}>
+          <Dynamics3DView />
+        </Suspense>
       ) : appMode === "inspector" ? (
         <Suspense fallback={<div className="p-8 text-sm text-slate-500">Loading…</div>}>
           <InspectorView />
