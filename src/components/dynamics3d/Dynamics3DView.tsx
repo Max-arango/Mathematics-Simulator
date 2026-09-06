@@ -22,7 +22,9 @@ import type { Integrator } from "../../mathlab/dynamics3d/integrators.ts";
 import type { CollisionMode } from "../../mathlab/dynamics3d/types.ts";
 import {
   getBodyVisualProfile, renderRadius, selectLOD, effectiveRenderMode,
+  planetPalette, defaultPlanetVariant, PLANET_VARIANTS,
   type BodyRenderMode, type CelestialQuality, type BodyVisualConfig,
+  type PlanetVariant, type PlanetPalette,
 } from "../../mathlab/dynamics3d/rendering.ts";
 
 const TYPE_COLOR: Record<BodyType, string> = {
@@ -84,6 +86,15 @@ export function Dynamics3DView() {
   const [showLabels, setShowLabels] = useState(false);
   const [debug, setDebug] = useState(false);
 
+  // Per-planet appearance (visual only, kept OUT of Body3D, §36): id → variant.
+  const variants = useRef<Map<string, PlanetVariant>>(new Map());
+  // Click-to-place spawning: armed body spec + spawn-plane height.
+  const [placeArm, setPlaceArm] = useState<{ preset: string; variant: PlanetVariant } | null>(null);
+  const [addVariant, setAddVariant] = useState<PlanetVariant>("earth");
+  const [spawnZ, setSpawnZ] = useState(0);
+  const placeRef = useRef(placeArm); placeRef.current = placeArm;
+  const spawnZRef = useRef(spawnZ); spawnZRef.current = spawnZ;
+
   const [fieldDensity, setFieldDensity] = useState(9);
   const [deformScale, setDeformScale] = useState(0.05);
   const [vectorScale, setVectorScale] = useState(1.5);
@@ -130,16 +141,45 @@ export function Dynamics3DView() {
   // high-resolution grid stays smooth while orbiting a paused scene.
   const surfCache = useRef<{ key: string; surf: SurfaceVertex[][]; minZ: number } | null>(null);
 
+  // Assign default planet variants (cycled) so a fresh scene's planets look distinct.
+  const assignDefaultVariants = (s: Simulation) => {
+    const m = new Map<string, PlanetVariant>();
+    let pi = 0;
+    for (const b of s.bodies) if (b.type === "planet") m.set(b.id, defaultPlanetVariant(pi++));
+    variants.current = m;
+  };
+  const getVariant = (id: string): PlanetVariant => variants.current.get(id) ?? "earth";
+  // Assign for the initial scenario once.
+  useEffect(() => { assignDefaultVariants(simRef.current); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+
   // Load a scenario (also on dt change we just mutate sim.dt live).
   const loadScenario = (id: ScenarioId) => {
     const sc = makeScenario(id);
     simRef.current = createSimulation(sc.bodies, { dt: sc.dt, integrator, collisionMode, trailLength, maxHistory: historyCap });
+    assignDefaultVariants(simRef.current);
     playheadRef.current = -1;
     setScenarioId(id);
     setDt(sc.dt);
     setPlaying(false);
     setSelectedId(null);
     forceUI((n) => n + 1);
+  };
+
+  // Spawn a body at an explicit world position (click-to-place, §12).
+  const spawnBodyAt = (preset: string, variant: PlanetVariant, pos: Vec3) => {
+    const p = BODY_PRESETS[preset];
+    const n = ++addCounter;
+    const body: Body3D = {
+      id: `add-${n}`, name: `${preset} ${n}`, type: p.type,
+      position: [pos[0], pos[1], pos[2]], velocity: [0, 0, 0], acceleration: [0, 0, 0],
+      mass: p.mass ?? 1, radius: p.radius ?? 0.3, gravitationalStrength: 1, active: true,
+      softening: p.softening, absorptionRadius: p.absorptionRadius,
+    };
+    simRef.current.bodies.push(body);
+    simRef.current.trails.set(body.id, [[...body.position] as Vec3]);
+    if (p.type === "planet") variants.current.set(body.id, variant);
+    setSelectedId(body.id);
+    forceUI((n2) => n2 + 1);
   };
 
   // Keep sim settings synced when the user changes them.
@@ -376,7 +416,14 @@ export function Dynamics3DView() {
         const r = Math.max(2, Math.min(90, (rWorld * f * h * 0.5) / s.cw));
         const profile = getBodyVisualProfile(b.type);
         if (mode === "minimal") drawBodyMinimal(ctx, profile, s.x, s.y, r);
-        else drawBodyCelestial(ctx, profile, s.x, s.y, r, selectLOD(r, vc.quality, activeCount), vc, pitchAbs);
+        else {
+          const lod = selectLOD(r, vc.quality, activeCount);
+          if (profile.shader === "planet" && (lod === "simple" || lod === "full")) {
+            drawPlanet(ctx, s.x, s.y, r, planetPalette(getVariant(b.id)), hashSeed(b.id), vc.showAtmosphere, pitchAbs, lod === "full");
+          } else {
+            drawBodyCelestial(ctx, profile, s.x, s.y, r, lod, vc, pitchAbs);
+          }
+        }
         drawnCount++;
         if (b.id === selRef.current) {
           ctx.strokeStyle = "#f8fafc"; ctx.lineWidth = 1.5;
@@ -426,9 +473,16 @@ export function Dynamics3DView() {
     const d = drag.current; drag.current = null;
     if (canvasRef.current!.hasPointerCapture(e.pointerId)) canvasRef.current!.releasePointerCapture(e.pointerId);
     if (!d || d.moved) return;
-    // click select: nearest projected body within 14px.
     const rect = canvasRef.current!.getBoundingClientRect();
     const w = rect.width, h = rect.height;
+    // Click-to-place: if armed, spawn at ray ∩ spawn-plane and consume the click (§12).
+    if (placeRef.current) {
+      const p = screenToPlane(e.clientX - rect.left, e.clientY - rect.top, w, h, spawnZRef.current);
+      if (p) spawnBodyAt(placeRef.current.preset, placeRef.current.variant, p);
+      setPlaceArm(null);
+      return;
+    }
+    // click select: nearest projected body within 14px.
     const t = target.current;
     const mvp = multiply(perspective(Math.PI / 4, (w / h) || 1, 0.1, 5000), orbitViewAt(yaw.current, pitch.current, dist.current, t[0], t[1], t[2]));
     const mx = e.clientX - rect.left, my = e.clientY - rect.top;
@@ -450,6 +504,28 @@ export function Dynamics3DView() {
 
   const camPreset = (y: number, p: number) => { yaw.current = y; pitch.current = p; };
 
+  // Unproject a screen pixel onto the world plane z = zPlane (for click-to-place).
+  const screenToPlane = (px: number, py: number, w: number, h: number, zPlane: number): Vec3 | null => {
+    const aspect = w / h || 1, tanH = Math.tan(Math.PI / 8); // fov/2 = π/8
+    const yv = yaw.current, pv = pitch.current, dv = dist.current, tg = target.current;
+    const cy = Math.cos(yv), sy = Math.sin(yv), cp = Math.cos(pv), sp = Math.sin(pv);
+    const eye: Vec3 = [tg[0] + dv * cp * cy, tg[1] + dv * cp * sy, tg[2] + dv * sp];
+    const fwd: Vec3 = [-cp * cy, -cp * sy, -sp]; // view direction (target − eye, normalised)
+    const { right, up } = orbitBasis(yv, pv);
+    const nx = (px / w) * 2 - 1, ny = 1 - (py / h) * 2;
+    const dir: Vec3 = [
+      fwd[0] + right[0] * nx * aspect * tanH + up[0] * ny * tanH,
+      fwd[1] + right[1] * nx * aspect * tanH + up[1] * ny * tanH,
+      fwd[2] + right[2] * nx * aspect * tanH + up[2] * ny * tanH,
+    ];
+    const dl = Math.hypot(dir[0], dir[1], dir[2]) || 1;
+    dir[0] /= dl; dir[1] /= dl; dir[2] /= dl;
+    if (Math.abs(dir[2]) < 1e-6) return null; // ray parallel to the plane
+    const tHit = (zPlane - eye[2]) / dir[2];
+    if (tHit <= 0) return null; // plane behind the camera
+    return [eye[0] + dir[0] * tHit, eye[1] + dir[1] * tHit, eye[2] + dir[2] * tHit];
+  };
+
   // ── body edits (live) ───────────────────────────────────────────────────────
   const patchBody = (id: string, patch: Partial<Body3D>) => {
     const b = simRef.current.bodies.find((x) => x.id === id);
@@ -462,23 +538,9 @@ export function Dynamics3DView() {
     if (selRef.current === id) setSelectedId(null);
     forceUI((n) => n + 1);
   };
-  const addBody = (preset: string) => {
-    const p = BODY_PRESETS[preset];
-    const n = ++addCounter;
-    const angle = n * 1.3;
-    const rr = 6 + (n % 4) * 3;
-    const body: Body3D = {
-      id: `add-${n}`, name: `${preset} ${n}`, type: p.type,
-      position: [Math.cos(angle) * rr, Math.sin(angle) * rr, 0],
-      velocity: [0, 0, 0], acceleration: [0, 0, 0],
-      mass: p.mass ?? 1, radius: p.radius ?? 0.3, gravitationalStrength: 1, active: true,
-      softening: p.softening, absorptionRadius: p.absorptionRadius,
-    };
-    simRef.current.bodies.push(body);
-    simRef.current.trails.set(body.id, [[...body.position] as Vec3]);
-    setSelectedId(body.id);
-    forceUI((n2) => n2 + 1);
-  };
+  // Arm click-to-place: the next click in the scene spawns this body (§12). Toggle off
+  // if the same preset is clicked again.
+  const armPlace = (preset: string) => setPlaceArm((cur) => (cur?.preset === preset ? null : { preset, variant: addVariant }));
 
   const sim = simRef.current;
   const rep = report(sim);
@@ -589,12 +651,21 @@ export function Dynamics3DView() {
         </div>
 
         <div>
-          <h3 className="mb-1 text-[10px] uppercase tracking-wide text-slate-500">Add body</h3>
+          <h3 className="mb-1 text-[10px] uppercase tracking-wide text-slate-500">Add body — click to place</h3>
           <div className="flex flex-wrap gap-1">
             {Object.keys(BODY_PRESETS).map((k) => (
-              <button key={k} onClick={() => addBody(k)} className="rounded bg-white/5 px-1.5 py-0.5 text-[11px] text-slate-400 hover:bg-white/10 hover:text-cyan-200">{k}</button>
+              <button key={k} onClick={() => armPlace(k)}
+                className={`rounded px-1.5 py-0.5 text-[11px] ${placeArm?.preset === k ? "bg-cyan-500/20 text-cyan-200 ring-1 ring-cyan-400/50" : "bg-white/5 text-slate-400 hover:bg-white/10 hover:text-cyan-200"}`}>{k}</button>
             ))}
           </div>
+          <div className="mt-1 flex items-center gap-1">
+            <span className="w-12 text-[11px] text-slate-500">planet</span>
+            <select value={addVariant} onChange={(e) => setAddVariant(e.target.value as PlanetVariant)} className="flex-1 rounded bg-slate-800/80 px-1.5 py-0.5 text-[11px] capitalize text-cyan-100 outline-none">
+              {PLANET_VARIANTS.map((v) => <option key={v} value={v}>{v}</option>)}
+            </select>
+          </div>
+          <Range label="spawn z" value={spawnZ} min={-15} max={15} step={1} onChange={setSpawnZ} fmt={(v) => String(v)} />
+          {placeArm && <p className="text-[10px] text-cyan-300">Click in the scene to place <b>{placeArm.preset}</b> (on z={spawnZ}). Click the button again to cancel.</p>}
         </div>
 
         <div>
@@ -692,6 +763,15 @@ export function Dynamics3DView() {
               <MassEdit label="mass" value={selected.mass} onChange={(m) => patchBody(selected.id, { mass: m })} />
               <MassEdit label="G-strength ×" value={selected.gravitationalStrength} onChange={(g) => patchBody(selected.id, { gravitationalStrength: g })} step />
               <p className="text-[9px] text-slate-500">effectiveMass = {effectiveMass(selected).toPrecision(4)} (experimental source term)</p>
+              {selected.type === "planet" && (
+                <div className="mt-1 flex items-center gap-1">
+                  <span className="w-16 text-[10px] text-slate-500">variant</span>
+                  <select value={getVariant(selected.id)} onChange={(e) => { variants.current.set(selected.id, e.target.value as PlanetVariant); forceUI((n) => n + 1); }}
+                    className="flex-1 rounded bg-slate-800/80 px-1 py-0.5 text-[10px] capitalize text-cyan-100 outline-none">
+                    {PLANET_VARIANTS.map((v) => <option key={v} value={v}>{v}</option>)}
+                  </select>
+                </div>
+              )}
             </div>
             <div className="mt-1.5 border-t border-white/10 pt-1">
               <p className="text-[10px] text-slate-500">Φ at body = {potentialAt(selected.position, dispBodies, sim.params, selected.id).toExponential(3)}</p>
@@ -862,6 +942,76 @@ function drawBodyCelestial(
       ctx.fillStyle = g; disc(ctx, x, y, r);
       break;
     }
+  }
+}
+
+// Deterministic seed from an id, and a tiny LCG so a planet's procedural surface
+// is STABLE across frames (doesn't shimmer) while differing between bodies.
+function hashSeed(id: string): number { let h = 2166136261; for (let i = 0; i < id.length; i++) h = Math.imul(h ^ id.charCodeAt(i), 16777619); return h >>> 0; }
+function lcg(seed: number): () => number { let s = seed >>> 0 || 1; return () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296; }
+
+/** Tilted ring system (Saturn-style), squashed by camera pitch. */
+function drawRingSystem(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, pitchAbs: number, color: string) {
+  ctx.save(); ctx.translate(x, y); ctx.scale(1, Math.max(0.1, pitchAbs));
+  ctx.lineWidth = Math.max(1, r * 0.12);
+  for (const [k, a] of [[1.5, 0.55], [1.9, 0.4], [2.25, 0.25]] as const) {
+    ctx.strokeStyle = hexA(color, a); ctx.beginPath(); ctx.arc(0, 0, r * k, 0, Math.PI * 2); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/** Procedural planet: shaded sphere + variant surface (continents/bands/craters/
+ *  cracks) + optional atmosphere + optional rings. Light canvas ops, no assets. */
+function drawPlanet(
+  ctx: CanvasRenderingContext2D, x: number, y: number, r: number,
+  pal: PlanetPalette, seed: number, showAtmo: boolean, pitchAbs: number, full: boolean,
+) {
+  if (pal.rings) drawRingSystem(ctx, x, y, r, pitchAbs, pal.land);
+  if (pal.atmosphere && showAtmo && full) {
+    const atmo = ctx.createRadialGradient(x, y, r * 0.92, x, y, r * 1.3);
+    atmo.addColorStop(0, hexA(pal.atmo, 0)); atmo.addColorStop(0.6, hexA(pal.atmo, 0.3)); atmo.addColorStop(1, hexA(pal.atmo, 0));
+    ctx.fillStyle = atmo; disc(ctx, x, y, r * 1.3);
+  }
+  // Shaded sphere (base = ocean), light from upper-left.
+  const g = ctx.createRadialGradient(x + LX * r * 0.55, y + LY * r * 0.55, r * 0.05, x, y, r);
+  g.addColorStop(0, lighten(pal.ocean, 0.5)); g.addColorStop(0.55, pal.ocean); g.addColorStop(1, darken(pal.ocean, 0.72));
+  ctx.fillStyle = g; disc(ctx, x, y, r);
+
+  if (full) {
+    ctx.save(); ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.clip();
+    const rnd = lcg(seed);
+    if (pal.bands) {
+      for (let k = 0; k < 5; k++) {
+        const yy = y - r + ((k + 0.5) * 2 * r) / 5 + (rnd() - 0.5) * r * 0.1;
+        ctx.fillStyle = hexA(k % 2 ? lighten(pal.land, 0.3) : darken(pal.land, 0.2), 0.5);
+        ctx.fillRect(x - r, yy - r * 0.12, 2 * r, r * 0.2);
+      }
+    }
+    if (pal.continents) {
+      for (let i = 0; i < 6; i++) {
+        const a = rnd() * Math.PI * 2, rad = rnd() * r * 0.62;
+        ctx.fillStyle = hexA(pal.land, 0.9); disc(ctx, x + Math.cos(a) * rad, y + Math.sin(a) * rad, r * (0.18 + rnd() * 0.28));
+      }
+    }
+    if (pal.craters) {
+      for (let i = 0; i < 7; i++) {
+        const a = rnd() * Math.PI * 2, rad = rnd() * r * 0.7, cs = r * (0.07 + rnd() * 0.12);
+        ctx.fillStyle = hexA("#000000", 0.18); disc(ctx, x + Math.cos(a) * rad, y + Math.sin(a) * rad, cs);
+        ctx.strokeStyle = hexA(pal.land, 0.7); ctx.lineWidth = 1; ring(ctx, x + Math.cos(a) * rad, y + Math.sin(a) * rad, cs);
+      }
+    }
+    if (pal.cracks) {
+      ctx.strokeStyle = hexA(pal.land, 0.95); ctx.lineWidth = Math.max(1, r * 0.05);
+      for (let i = 0; i < 6; i++) {
+        const a = rnd() * Math.PI * 2, a2 = a + (rnd() - 0.5);
+        ctx.beginPath(); ctx.moveTo(x + Math.cos(a) * r * 0.2, y + Math.sin(a) * r * 0.2); ctx.lineTo(x + Math.cos(a2) * r * 0.9, y + Math.sin(a2) * r * 0.9); ctx.stroke();
+      }
+    }
+    ctx.restore();
+    // limb darkening overlay for depth
+    const limb = ctx.createRadialGradient(x, y, r * 0.6, x, y, r);
+    limb.addColorStop(0, "rgba(0,0,0,0)"); limb.addColorStop(1, "rgba(0,0,0,0.35)");
+    ctx.fillStyle = limb; disc(ctx, x, y, r);
   }
 }
 
