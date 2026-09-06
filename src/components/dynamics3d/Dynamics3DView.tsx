@@ -72,9 +72,9 @@ export function Dynamics3DView() {
   const [fieldDensity, setFieldDensity] = useState(9);
   const [deformScale, setDeformScale] = useState(0.05);
   const [vectorScale, setVectorScale] = useState(1.5);
+  const [deformRes, setDeformRes] = useState(24);   // space-time sheet grid resolution
+  const [fieldExtent, setFieldExtent] = useState(22); // sheet / field half-size
   const [, forceUI] = useState(0);
-
-  const FIELD_EXTENT = 22;
 
   // Camera (refs — smooth pointer updates without re-render).
   const yaw = useRef(0.9), pitch = useRef(0.5), dist = useRef(45);
@@ -91,8 +91,8 @@ export function Dynamics3DView() {
   const speedRef = useRef(speed); speedRef.current = speed;
   const vizRef = useRef(viz); vizRef.current = viz;
   const selRef = useRef(selectedId); selRef.current = selectedId;
-  const fieldCtl = useRef({ density: fieldDensity, deformScale, vectorScale });
-  fieldCtl.current = { density: fieldDensity, deformScale, vectorScale };
+  const fieldCtl = useRef({ density: fieldDensity, deformScale, vectorScale, deformRes, extent: fieldExtent });
+  fieldCtl.current = { density: fieldDensity, deformScale, vectorScale, deformRes, extent: fieldExtent };
 
   // Load a scenario (also on dt change we just mutate sim.dt live).
   const loadScenario = (id: ScenarioId) => {
@@ -146,6 +146,7 @@ export function Dynamics3DView() {
     const f = 1 / Math.tan(fov / 2);
     const sim = simRef.current;
     const P = (x: Vec3) => projectP(mvp, x[0], x[1], x[2], w, h);
+    const EXT = fieldCtl.current.extent;
 
     // Grid on the z=0 plane.
     if (vizRef.current.grid) {
@@ -158,8 +159,8 @@ export function Dynamics3DView() {
     }
     // Space-time DEFORMATION PROXY (§7) — rubber sheet of the effective potential.
     if (vizRef.current.deformation) {
-      const n = 24;
-      const surf = potentialSurfaceZ(sim.bodies, sim.params, FIELD_EXTENT, n, fieldCtl.current.deformScale, FIELD_EXTENT);
+      const n = fieldCtl.current.deformRes;
+      const surf = potentialSurfaceZ(sim.bodies, sim.params, EXT, n, fieldCtl.current.deformScale, EXT);
       let minZ = 0;
       for (const row of surf) for (const v of row) if (v.z < minZ) minZ = v.z;
       const depth = (z: number) => (minZ < 0 ? z / minZ : 0); // 0..1, deeper = 1
@@ -176,7 +177,7 @@ export function Dynamics3DView() {
 
     // Gravity field vectors (§8) — direction of acceleration at each grid point.
     if (vizRef.current.gravityField) {
-      const samples = sampleFieldGridZ(sim.bodies, sim.params, FIELD_EXTENT, fieldCtl.current.density, 0);
+      const samples = sampleFieldGridZ(sim.bodies, sim.params, EXT, fieldCtl.current.density, 0);
       let ref = 1e-6;
       for (const s of samples) if (s.mag > ref && Number.isFinite(s.mag)) ref = Math.max(ref, s.mag);
       for (const s of samples) {
@@ -195,11 +196,11 @@ export function Dynamics3DView() {
 
     // Field lines (§20) — integral curves of g, seeded on a ring, traced inward.
     if (vizRef.current.fieldLines) {
-      const seeds = 20, R = FIELD_EXTENT * 0.75;
+      const seeds = 20, R = EXT * 0.75;
       ctx.strokeStyle = "rgba(52,211,153,0.5)"; ctx.lineWidth = 1;
       for (let k = 0; k < seeds; k++) {
         const th = (2 * Math.PI * k) / seeds;
-        const line = traceFieldLine([Math.cos(th) * R, Math.sin(th) * R, 0], sim.bodies, sim.params, { steps: 80, ds: 0.5, bound: FIELD_EXTENT * 2 });
+        const line = traceFieldLine([Math.cos(th) * R, Math.sin(th) * R, 0], sim.bodies, sim.params, { steps: 80, ds: 0.5, bound: EXT * 2 });
         ctx.beginPath();
         let started = false;
         for (const p of line) {
@@ -411,11 +412,13 @@ export function Dynamics3DView() {
               </label>
             ))}
           </div>
-          {(viz.gravityField || viz.deformation) && (
+          {(viz.gravityField || viz.deformation || viz.fieldLines) && (
             <div className="mt-1.5 space-y-0.5 rounded bg-black/30 p-1.5">
               {(viz.gravityField || viz.fieldLines) && <Range label="density" value={fieldDensity} min={5} max={17} step={2} onChange={setFieldDensity} fmt={(v) => String(v)} />}
               {viz.gravityField && <Range label="vec scale" value={vectorScale} min={0.5} max={5} step={0.5} onChange={setVectorScale} fmt={(v) => v.toFixed(1)} />}
-              {viz.deformation && <Range label="deform" value={deformScale} min={0.01} max={0.3} step={0.01} onChange={setDeformScale} fmt={(v) => v.toFixed(2)} />}
+              {viz.deformation && <Range label="grid" value={deformRes} min={8} max={48} step={2} onChange={setDeformRes} fmt={(v) => `${v}²`} />}
+              {viz.deformation && <Range label="deform" value={deformScale} min={0.01} max={0.4} step={0.01} onChange={setDeformScale} fmt={(v) => v.toFixed(2)} />}
+              <Range label="extent" value={fieldExtent} min={8} max={60} step={2} onChange={setFieldExtent} fmt={(v) => String(v)} />
               <p className="text-[9px] leading-tight text-slate-500">Field/deformation visualise the effective potential — not the Einstein metric.</p>
             </div>
           )}
