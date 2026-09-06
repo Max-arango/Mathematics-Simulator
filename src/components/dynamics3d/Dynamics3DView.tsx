@@ -20,6 +20,10 @@ import { sampleFieldGridZ, potentialSurfaceZ, traceFieldLine, type SurfaceVertex
 import type { Body3D, BodyType, Vec3 } from "../../mathlab/dynamics3d/types.ts";
 import type { Integrator } from "../../mathlab/dynamics3d/integrators.ts";
 import type { CollisionMode } from "../../mathlab/dynamics3d/types.ts";
+import {
+  getBodyVisualProfile, renderRadius, selectLOD, effectiveRenderMode,
+  type BodyRenderMode, type CelestialQuality, type BodyVisualConfig,
+} from "../../mathlab/dynamics3d/rendering.ts";
 
 const TYPE_COLOR: Record<BodyType, string> = {
   particle: "#94a3b8", planet: "#38bdf8", star: "#fbbf24",
@@ -71,6 +75,15 @@ export function Dynamics3DView() {
     bodies: true, trails: true, axes: true, grid: true,
     velocity: false, accel: false, gravityField: false, deformation: false, fieldLines: false,
   });
+  // Body rendering (visual only — never touches physics, §36).
+  const [renderModeUI, setRenderMode] = useState<BodyRenderMode>("celestial");
+  const [quality, setQuality] = useState<CelestialQuality>("auto");
+  const [bodyScale, setBodyScale] = useState(1);
+  const [effects, setEffects] = useState({ atmosphere: true, glow: true, accretionDisk: true, advanced: false });
+  const [performanceMode, setPerformanceMode] = useState(false);
+  const [showLabels, setShowLabels] = useState(false);
+  const [debug, setDebug] = useState(false);
+
   const [fieldDensity, setFieldDensity] = useState(9);
   const [deformScale, setDeformScale] = useState(0.05);
   const [vectorScale, setVectorScale] = useState(1.5);
@@ -101,6 +114,18 @@ export function Dynamics3DView() {
   const selRef = useRef(selectedId); selRef.current = selectedId;
   const fieldCtl = useRef({ density: fieldDensity, deformScale, vectorScale, deformRes, extent: fieldExtent });
   fieldCtl.current = { density: fieldDensity, deformScale, vectorScale, deformRes, extent: fieldExtent };
+  const visualRef = useRef<BodyVisualConfig & { labels: boolean }>({
+    renderMode: renderModeUI, quality, scale: bodyScale,
+    showAtmosphere: effects.atmosphere, showGlow: effects.glow, showAccretionDisk: effects.accretionDisk,
+    performanceMode, labels: showLabels,
+  });
+  visualRef.current = {
+    renderMode: renderModeUI, quality, scale: bodyScale,
+    showAtmosphere: effects.atmosphere, showGlow: effects.glow, showAccretionDisk: effects.accretionDisk,
+    performanceMode, labels: showLabels,
+  };
+  // Frame-time telemetry (debug overlay only).
+  const perf = useRef({ fps: 0, last: 0, drawn: 0 });
   // Cache the deformation sheet — recompute only when bodies/controls change, so a
   // high-resolution grid stays smooth while orbiting a paused scene.
   const surfCache = useRef<{ key: string; surf: SurfaceVertex[][]; minZ: number } | null>(null);
@@ -176,6 +201,8 @@ export function Dynamics3DView() {
         if (k.has("q")) tg[2] -= speed;
       }
       draw();
+      const dtf = now - perf.current.last; perf.current.last = now;
+      if (dtf > 0 && dtf < 1000) perf.current.fps = perf.current.fps ? perf.current.fps * 0.9 + (1000 / dtf) * 0.1 : 1000 / dtf;
       if (now - lastUI > 120) { forceUI((k) => k + 1); lastUI = now; }
       raf = requestAnimationFrame(loop);
     };
@@ -227,6 +254,8 @@ export function Dynamics3DView() {
     const ph = playheadRef.current;
     const scrubbing = ph >= 0 && ph < sim.history.length - 1;
     const bodies = scrubbing ? frameToBodies(sim, sim.history[ph]) : sim.bodies;
+    const vc = visualRef.current;
+    const perfMode = vc.performanceMode; // degrade visuals before physics (§45)
 
     // Grid on the z=0 plane.
     if (vizRef.current.grid) {
@@ -239,7 +268,7 @@ export function Dynamics3DView() {
     }
     // Space-time DEFORMATION PROXY (§7) — rubber sheet of the effective potential.
     if (vizRef.current.deformation) {
-      const n = fieldCtl.current.deformRes;
+      const n = perfMode ? Math.min(fieldCtl.current.deformRes, 16) : fieldCtl.current.deformRes;
       // Bodies signature: recompute the sheet only when a source actually changes
       // (moved / mass / strength edited), not on every camera-only frame.
       let sig = scrubbing ? ph : 0;
@@ -269,7 +298,7 @@ export function Dynamics3DView() {
 
     // Gravity field vectors (§8) — direction of acceleration at each grid point.
     if (vizRef.current.gravityField) {
-      const samples = sampleFieldGridZ(bodies, sim.params, EXT, fieldCtl.current.density, 0);
+      const samples = sampleFieldGridZ(bodies, sim.params, EXT, perfMode ? Math.min(fieldCtl.current.density, 7) : fieldCtl.current.density, 0);
       let ref = 1e-6;
       for (const s of samples) if (s.mag > ref && Number.isFinite(s.mag)) ref = Math.max(ref, s.mag);
       for (const s of samples) {
@@ -329,36 +358,40 @@ export function Dynamics3DView() {
       }
     }
 
-    // Bodies — painter's order (far first). cw larger = farther.
+    // Bodies — visual layer (Minimal vs Celestial), painter's order (far first) so
+    // depth reads correctly against trails/field/deformation. Physics is untouched:
+    // display size comes from renderRadius, never body.radius (§20/§35).
+    const mode = effectiveRenderMode(vc);
+    let drawnCount = 0;
     if (vizRef.current.bodies) {
+      const activeCount = bodies.reduce((n, b) => n + (b.active ? 1 : 0), 0);
+      const pitchAbs = Math.min(1, Math.abs(Math.sin(pitch.current)) + 0.12); // accretion-disk tilt
       const drawn = bodies
         .filter((b) => b.active)
         .map((b) => ({ b, s: P(b.position) }))
         .filter((o): o is { b: Body3D; s: { x: number; y: number; cw: number } } => o.s !== null)
         .sort((a, z) => z.s.cw - a.s.cw);
       for (const { b, s } of drawn) {
-        const r = Math.max(2.5, Math.min(60, (b.radius * f * h * 0.5) / s.cw));
-        const color = TYPE_COLOR[b.type];
-        // glow for compact objects
-        if (b.type === "black-hole" || b.type === "singularity") {
-          const g = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, r * 3);
-          g.addColorStop(0, hexA(color, 0.5)); g.addColorStop(1, hexA(color, 0));
-          ctx.fillStyle = g; ctx.beginPath(); ctx.arc(s.x, s.y, r * 3, 0, Math.PI * 2); ctx.fill();
-        }
-        ctx.fillStyle = color;
-        ctx.beginPath(); ctx.arc(s.x, s.y, r, 0, Math.PI * 2); ctx.fill();
+        const rWorld = renderRadius(b.radius, vc.scale);
+        const r = Math.max(2, Math.min(90, (rWorld * f * h * 0.5) / s.cw));
+        const profile = getBodyVisualProfile(b.type);
+        if (mode === "minimal") drawBodyMinimal(ctx, profile, s.x, s.y, r);
+        else drawBodyCelestial(ctx, profile, s.x, s.y, r, selectLOD(r, vc.quality, activeCount), vc, pitchAbs);
+        drawnCount++;
         if (b.id === selRef.current) {
           ctx.strokeStyle = "#f8fafc"; ctx.lineWidth = 1.5;
-          ctx.beginPath(); ctx.arc(s.x, s.y, r + 4, 0, Math.PI * 2); ctx.stroke();
+          ctx.beginPath(); ctx.arc(s.x, s.y, r + 5, 0, Math.PI * 2); ctx.stroke();
+        }
+        if (vc.labels || b.id === selRef.current) {
           ctx.fillStyle = "#e2e8f0"; ctx.font = "11px ui-monospace, monospace";
           ctx.fillText(b.name, s.x + r + 6, s.y - r);
         }
-        // velocity / acceleration vectors
         const vv = vizRef.current.velocity, av = vizRef.current.accel;
         if (vv) vec(ctx, P(b.position), P(add(b.position, scaleV(b.velocity, 0.4))), "#22d3ee");
         if (av) vec(ctx, P(b.position), P(add(b.position, scaleV(b.acceleration, 0.4))), "#fbbf24");
       }
     }
+    perf.current.drawn = drawnCount;
 
     // Status banner if failed/unstable.
     if (sim.status === "numericalFailure" || sim.status === "unstable") {
@@ -480,6 +513,42 @@ export function Dynamics3DView() {
           </select>
         </div>
 
+        {/* ── Body rendering (visual only — switching never touches physics, §4/§51). ── */}
+        <div>
+          <h3 className="mb-1 text-[10px] uppercase tracking-wide text-slate-500">Body rendering</h3>
+          <div className="flex gap-1">
+            {(["minimal", "celestial"] as BodyRenderMode[]).map((m) => (
+              <button key={m} onClick={() => setRenderMode(m)} className={`${chip(renderModeUI === m)} flex-1 capitalize`}>{m}</button>
+            ))}
+          </div>
+          <div className="mt-1 flex items-center gap-1">
+            <span className="w-12 text-[11px] text-slate-500">quality</span>
+            <select value={quality} onChange={(e) => setQuality(e.target.value as CelestialQuality)} className="flex-1 rounded bg-slate-800/80 px-1.5 py-0.5 text-[11px] text-cyan-100 outline-none">
+              {(["auto", "low", "medium", "high"] as CelestialQuality[]).map((q) => <option key={q} value={q}>{q}</option>)}
+            </select>
+          </div>
+          <Range label="scale" value={bodyScale} min={0.2} max={4} step={0.1} onChange={setBodyScale} fmt={(v) => `${v.toFixed(1)}x`} />
+          {renderModeUI === "celestial" && !performanceMode && (
+            <div className="mt-0.5 grid grid-cols-2 gap-x-2 gap-y-0.5">
+              {([["atmosphere", "Atmosphere"], ["glow", "Star glow"], ["accretionDisk", "Accretion disk"]] as [keyof typeof effects, string][]).map(([k, label]) => (
+                <label key={k} className="flex items-center gap-1.5 text-[10px]">
+                  <input type="checkbox" checked={effects[k]} onChange={(e) => setEffects((f) => ({ ...f, [k]: e.target.checked }))} />{label}
+                </label>
+              ))}
+            </div>
+          )}
+          <label className="mt-1 flex items-center gap-2 text-[11px] text-slate-300">
+            <input type="checkbox" checked={performanceMode} onChange={(e) => setPerformanceMode(e.target.checked)} />
+            <span>Performance mode <span className="text-slate-500">(forces minimal)</span></span>
+          </label>
+          <label className="flex items-center gap-2 text-[11px] text-slate-300">
+            <input type="checkbox" checked={showLabels} onChange={(e) => setShowLabels(e.target.checked)} /><span>Body labels</span>
+          </label>
+          <label className="flex items-center gap-2 text-[11px] text-slate-300">
+            <input type="checkbox" checked={debug} onChange={(e) => setDebug(e.target.checked)} /><span>Renderer debug</span>
+          </label>
+        </div>
+
         <div className="rounded bg-black/30 p-2">
           {/* transport: reverse / forward playback (a recording you can scrub) */}
           <div className="mb-1 flex gap-1">
@@ -599,6 +668,13 @@ export function Dynamics3DView() {
         </div>
         <div className="pointer-events-none absolute bottom-2 right-2 text-right text-[10px] text-slate-600">drag orbit · shift/right-drag pan · WASD/QE fly · wheel zoom · click select</div>
 
+        {debug && (
+          <div className="pointer-events-none absolute bottom-2 left-2 rounded bg-black/60 px-2 py-1 font-mono text-[10px] text-emerald-300">
+            {perf.current.fps.toFixed(0)} fps · drawn {perf.current.drawn}/{rep.activeBodies}<br />
+            mode {effectiveRenderMode(visualRef.current)} · quality {quality} · scale {bodyScale.toFixed(1)}x
+          </div>
+        )}
+
         {/* inspector overlay */}
         {selected && (
           <div className="absolute right-2 top-2 w-60 rounded bg-black/70 p-2 text-[11px] text-slate-300 backdrop-blur">
@@ -678,6 +754,117 @@ function vec(ctx: CanvasRenderingContext2D, a: Pt, b: Pt, color: string) {
   ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
 }
 function hexA(hex: string, a: number): string { const n = parseInt(hex.slice(1), 16); return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`; }
+function mix(hex: string, target: number, t: number): string {
+  const n = parseInt(hex.slice(1), 16);
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  const m = (c: number) => Math.round(c + (target - c) * t);
+  return `rgb(${m(r)},${m(g)},${m(b)})`;
+}
+const lighten = (hex: string, t: number) => mix(hex, 255, t);
+const darken = (hex: string, t: number) => mix(hex, 0, t);
+const disc = (ctx: CanvasRenderingContext2D, x: number, y: number, r: number) => { ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); };
+const ring = (ctx: CanvasRenderingContext2D, x: number, y: number, r: number) => { ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke(); };
+
+// ── Minimal-mode markers (cheap; scale to thousands of bodies, §5/§6). ───────
+function drawBodyMinimal(ctx: CanvasRenderingContext2D, p: { shader: string; baseColor: string }, x: number, y: number, r: number) {
+  const rr = Math.min(r, 6);
+  switch (p.shader) {
+    case "point": ctx.fillStyle = p.baseColor; disc(ctx, x, y, Math.max(1.5, rr * 0.6)); break;
+    case "star": ctx.fillStyle = p.baseColor; disc(ctx, x, y, rr); ctx.strokeStyle = hexA(p.baseColor, 0.6); ctx.lineWidth = 1; ring(ctx, x, y, rr + 2); break;
+    case "black-hole": ctx.strokeStyle = p.baseColor; ctx.lineWidth = 1.5; ring(ctx, x, y, rr + 1); ctx.fillStyle = "#0a0a12"; disc(ctx, x, y, rr * 0.55); break;
+    case "singularity":
+      ctx.fillStyle = p.baseColor; disc(ctx, x, y, rr * 0.5);
+      ctx.strokeStyle = hexA(p.baseColor, 0.8); ctx.lineWidth = 1;
+      for (const [dx, dy] of [[1, 0], [0, 1]] as const) { ctx.beginPath(); ctx.moveTo(x - dx * (rr + 3), y - dy * (rr + 3)); ctx.lineTo(x + dx * (rr + 3), y + dy * (rr + 3)); ctx.stroke(); }
+      break;
+    default: ctx.fillStyle = p.baseColor; disc(ctx, x, y, rr); // planet
+  }
+}
+
+// ── Celestial-mode procedural bodies (light canvas gradients; a WebGL renderer
+//    could replace this consuming the same profile). Fake screen-space lighting. ─
+const LX = -0.42, LY = -0.5; // screen-space light direction (upper-left highlight)
+function drawBodyCelestial(
+  ctx: CanvasRenderingContext2D,
+  p: { shader: string; baseColor: string; emissive: boolean },
+  x: number, y: number, r: number, lod: string,
+  vc: { showAtmosphere: boolean; showGlow: boolean; showAccretionDisk: boolean },
+  pitchAbs: number,
+) {
+  const base = p.baseColor;
+  if (lod === "point") { ctx.fillStyle = base; disc(ctx, x, y, Math.max(1.5, r * 0.7)); return; }
+  if (lod === "billboard") {
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r * 1.6);
+    g.addColorStop(0, hexA(base, 0.9)); g.addColorStop(1, hexA(base, 0));
+    ctx.fillStyle = g; disc(ctx, x, y, r * 1.6);
+    ctx.fillStyle = base; disc(ctx, x, y, r * 0.6);
+    return;
+  }
+  const full = lod === "full";
+  switch (p.shader) {
+    case "star": {
+      if (vc.showGlow) {
+        const g = ctx.createRadialGradient(x, y, 0, x, y, r * 3.2);
+        g.addColorStop(0, hexA(base, 0.55)); g.addColorStop(0.4, hexA(base, 0.22)); g.addColorStop(1, hexA(base, 0));
+        ctx.fillStyle = g; disc(ctx, x, y, r * 3.2);
+      }
+      const core = ctx.createRadialGradient(x, y, 0, x, y, r);
+      core.addColorStop(0, "#fffdf5"); core.addColorStop(0.5, lighten(base, 0.4)); core.addColorStop(1, base);
+      ctx.fillStyle = core; disc(ctx, x, y, r);
+      break;
+    }
+    case "black-hole": {
+      if (vc.showAccretionDisk) {
+        const dR = r * 2.6, ry = Math.max(0.12, pitchAbs);
+        ctx.save(); ctx.translate(x, y); ctx.scale(1, ry);
+        const g = ctx.createRadialGradient(0, 0, r * 1.02, 0, 0, dR);
+        g.addColorStop(0, hexA("#fb923c", 0)); g.addColorStop(0.45, hexA("#fdba74", 0.55));
+        g.addColorStop(0.75, hexA("#f97316", 0.35)); g.addColorStop(1, hexA("#7c2d12", 0));
+        ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, dR, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+      }
+      const glow = ctx.createRadialGradient(x, y, r * 0.85, x, y, r * 1.7);
+      glow.addColorStop(0, hexA("#a78bfa", 0.28)); glow.addColorStop(1, hexA("#a78bfa", 0));
+      ctx.fillStyle = glow; disc(ctx, x, y, r * 1.7);
+      const core = ctx.createRadialGradient(x, y, r * 0.2, x, y, r);
+      core.addColorStop(0, "#04040a"); core.addColorStop(0.85, "#0a0a14"); core.addColorStop(1, hexA("#a78bfa", 0.5));
+      ctx.fillStyle = core; disc(ctx, x, y, r);
+      break;
+    }
+    case "singularity": {
+      if (vc.showGlow) {
+        const g = ctx.createRadialGradient(x, y, 0, x, y, r * 2.3);
+        g.addColorStop(0, hexA(base, 0.4)); g.addColorStop(1, hexA(base, 0));
+        ctx.fillStyle = g; disc(ctx, x, y, r * 2.3);
+      }
+      ctx.strokeStyle = hexA(base, 0.5); ctx.lineWidth = 1;
+      for (const k of [1.4, 1.9, 2.4]) ring(ctx, x, y, r * k);
+      const core = ctx.createRadialGradient(x, y, r * 0.1, x, y, r);
+      core.addColorStop(0, "#120a16"); core.addColorStop(0.7, "#1e1030"); core.addColorStop(1, hexA(base, 0.9));
+      ctx.fillStyle = core; disc(ctx, x, y, r);
+      break;
+    }
+    case "point": {
+      const g = ctx.createRadialGradient(x, y, 0, x, y, r * 1.5);
+      g.addColorStop(0, hexA(base, 0.95)); g.addColorStop(1, hexA(base, 0));
+      ctx.fillStyle = g; disc(ctx, x, y, r * 1.5);
+      ctx.fillStyle = lighten(base, 0.3); disc(ctx, x, y, r * 0.6);
+      break;
+    }
+    default: { // planet — shaded sphere + optional atmosphere
+      if (vc.showAtmosphere && full) {
+        const atmo = ctx.createRadialGradient(x, y, r * 0.92, x, y, r * 1.28);
+        atmo.addColorStop(0, hexA(lighten(base, 0.5), 0)); atmo.addColorStop(0.6, hexA(lighten(base, 0.5), 0.28)); atmo.addColorStop(1, hexA(lighten(base, 0.5), 0));
+        ctx.fillStyle = atmo; disc(ctx, x, y, r * 1.28);
+      }
+      const g = ctx.createRadialGradient(x + LX * r * 0.55, y + LY * r * 0.55, r * 0.05, x, y, r);
+      g.addColorStop(0, lighten(base, 0.55)); g.addColorStop(0.55, base); g.addColorStop(1, darken(base, 0.72));
+      ctx.fillStyle = g; disc(ctx, x, y, r);
+      break;
+    }
+  }
+}
+
 const add = (a: Vec3, b: Vec3): Vec3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
 const scaleV = (a: Vec3, s: number): Vec3 => [a[0] * s, a[1] * s, a[2] * s];
 const fv = (v: Vec3) => `${v[0].toFixed(2)}, ${v[1].toFixed(2)}, ${v[2].toFixed(2)}`;
