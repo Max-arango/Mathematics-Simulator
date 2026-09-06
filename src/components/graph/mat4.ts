@@ -33,11 +33,29 @@ export function multiply(a: Mat4, b: Mat4): Mat4 {
 
 /** Orbit camera looking at the origin: rotate around Z by `yaw`, tilt by `pitch`, distance `dist`. */
 export function orbitView(yaw: number, pitch: number, dist: number): Mat4 {
+  return orbitViewAt(yaw, pitch, dist, 0, 0, 0);
+}
+
+/** Orbit camera looking at an arbitrary target (tx,ty,tz) — lets the view PAN/FLY
+ *  through the scene, not just spin around the origin. */
+export function orbitViewAt(yaw: number, pitch: number, dist: number, tx: number, ty: number, tz: number): Mat4 {
   const cy = Math.cos(yaw), sy = Math.sin(yaw);
   const cp = Math.cos(pitch), sp = Math.sin(pitch);
-  // Camera position on a sphere (Z up).
-  const ex = dist * cp * cy, ey = dist * cp * sy, ez = dist * sp;
-  return lookAt(ex, ey, ez, 0, 0, 0, 0, 0, 1);
+  const ex = tx + dist * cp * cy, ey = ty + dist * cp * sy, ez = tz + dist * sp;
+  return lookAt(ex, ey, ez, tx, ty, tz, 0, 0, 1);
+}
+
+/** Camera basis (right, up) for a given yaw/pitch — for screen-plane panning. */
+export function orbitBasis(yaw: number, pitch: number): { right: [number, number, number]; up: [number, number, number] } {
+  const cy = Math.cos(yaw), sy = Math.sin(yaw);
+  const cp = Math.cos(pitch), sp = Math.sin(pitch);
+  // z = normalize(eye − target) points from target toward camera.
+  const zx = cp * cy, zy = cp * sy, zz = sp;
+  // right = normalize(worldUp × z), up = z × right  (worldUp = +Z).
+  let rx = 0 * zz - 1 * zy, ry = 1 * zx - 0 * zz, rz = 0 * zy - 0 * zx; // (0,0,1)×z
+  const rl = Math.hypot(rx, ry, rz) || 1; rx /= rl; ry /= rl; rz /= rl;
+  const ux = zy * rz - zz * ry, uy = zz * rx - zx * rz, uz = zx * ry - zy * rx;
+  return { right: [rx, ry, rz], up: [ux, uy, uz] };
 }
 
 function lookAt(ex: number, ey: number, ez: number, tx: number, ty: number, tz: number, ux: number, uy: number, uz: number): Mat4 {

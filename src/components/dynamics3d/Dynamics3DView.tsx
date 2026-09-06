@@ -7,7 +7,7 @@
 // NOT a 2D fake (§6). This is an EFFECTIVE gravitational-field model — a visual
 // space-time approximation, NOT the Einstein metric (§2, §37).
 import { useEffect, useRef, useState } from "react";
-import { perspective, multiply, orbitView, type Mat4 } from "../graph/mat4.ts";
+import { perspective, multiply, orbitViewAt, orbitBasis, type Mat4 } from "../graph/mat4.ts";
 import { norm } from "../../mathlab/linear/vector.ts";
 import {
   createSimulation, stepSimulation, resetSimulation, report,
@@ -78,6 +78,10 @@ export function Dynamics3DView() {
 
   // Camera (refs — smooth pointer updates without re-render).
   const yaw = useRef(0.9), pitch = useRef(0.5), dist = useRef(45);
+  // Camera TARGET — the point the orbit revolves around. Pan/fly moves it so the
+  // user travels through the space, not just spins around the origin.
+  const target = useRef<Vec3>([0, 0, 0]);
+  const keys = useRef<Set<string>>(new Set());
 
   // Simulation in a ref — the physics never touches React state.
   const simRef = useRef<Simulation>(makeSim("planetary", 0.005));
@@ -125,6 +129,22 @@ export function Dynamics3DView() {
         acc -= n;
         if (n > 0) stepSimulation(sim, n, true);
       }
+      // Fly: move the camera target with held keys (WASD/QE/space + arrows).
+      const k = keys.current;
+      if (k.size) {
+        const speed = Math.max(0.05, dist.current * 0.02);
+        const cy = Math.cos(yaw.current), sy = Math.sin(yaw.current);
+        const fwd: Vec3 = [-cy, -sy, 0];          // into the screen (horizontal)
+        const right: Vec3 = [-sy, cy, 0];          // screen right (horizontal)
+        const tg = target.current;
+        const mv = (v: Vec3, s: number) => { tg[0] += v[0] * s; tg[1] += v[1] * s; tg[2] += v[2] * s; };
+        if (k.has("w") || k.has("arrowup")) mv(fwd, speed);
+        if (k.has("s") || k.has("arrowdown")) mv(fwd, -speed);
+        if (k.has("d") || k.has("arrowright")) mv(right, speed);
+        if (k.has("a") || k.has("arrowleft")) mv(right, -speed);
+        if (k.has("e") || k.has(" ")) tg[2] += speed;
+        if (k.has("q")) tg[2] -= speed;
+      }
       draw();
       if (now - lastUI > 120) { forceUI((k) => k + 1); lastUI = now; }
       raf = requestAnimationFrame(loop);
@@ -132,6 +152,27 @@ export function Dynamics3DView() {
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Keyboard fly controls (WASD / QE / space / arrows). Ignored while typing in a field.
+  useEffect(() => {
+    const FLY = new Set(["w", "a", "s", "d", "q", "e", " ", "arrowup", "arrowdown", "arrowleft", "arrowright"]);
+    const isField = (el: EventTarget | null) => {
+      const t = el as HTMLElement | null;
+      return !!t && (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA");
+    };
+    const down = (e: KeyboardEvent) => {
+      const key = e.key.toLowerCase();
+      if (!FLY.has(key) || isField(e.target)) return;
+      keys.current.add(key);
+      e.preventDefault();
+    };
+    const up = (e: KeyboardEvent) => { keys.current.delete(e.key.toLowerCase()); };
+    const clear = () => keys.current.clear();
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    window.addEventListener("blur", clear);
+    return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); window.removeEventListener("blur", clear); };
   }, []);
 
   const draw = () => {
@@ -145,7 +186,8 @@ export function Dynamics3DView() {
 
     const aspect = w / h || 1;
     const fov = Math.PI / 4;
-    const mvp = multiply(perspective(fov, aspect, 0.1, 5000), orbitView(yaw.current, pitch.current, dist.current));
+    const t = target.current;
+    const mvp = multiply(perspective(fov, aspect, 0.1, 5000), orbitViewAt(yaw.current, pitch.current, dist.current, t[0], t[1], t[2]));
     const f = 1 / Math.tan(fov / 2);
     const sim = simRef.current;
     const P = (x: Vec3) => projectP(mvp, x[0], x[1], x[2], w, h);
@@ -292,14 +334,24 @@ export function Dynamics3DView() {
   };
 
   // ── pointer: drag orbit, wheel zoom, click select ──────────────────────────
-  const drag = useRef<{ x: number; y: number; moved: boolean } | null>(null);
-  const onDown = (e: React.PointerEvent) => { drag.current = { x: e.clientX, y: e.clientY, moved: false }; canvasRef.current!.setPointerCapture(e.pointerId); };
+  const drag = useRef<{ x: number; y: number; moved: boolean; pan: boolean } | null>(null);
+  const onDown = (e: React.PointerEvent) => {
+    drag.current = { x: e.clientX, y: e.clientY, moved: false, pan: e.button === 1 || e.button === 2 || e.shiftKey };
+    canvasRef.current!.setPointerCapture(e.pointerId);
+  };
   const onMove = (e: React.PointerEvent) => {
     if (!drag.current) return;
     const dx = e.clientX - drag.current.x, dy = e.clientY - drag.current.y;
     if (Math.abs(dx) + Math.abs(dy) > 3) drag.current.moved = true;
-    yaw.current += dx * 0.008;
-    pitch.current = Math.max(-1.5, Math.min(1.5, pitch.current + dy * 0.008));
+    if (drag.current.pan) {
+      // Pan the target across the camera's screen plane → travel through the space.
+      const { right, up } = orbitBasis(yaw.current, pitch.current);
+      const s = dist.current * 0.0016, tg = target.current;
+      for (let c = 0; c < 3; c++) tg[c] += (-dx * right[c] + dy * up[c]) * s;
+    } else {
+      yaw.current += dx * 0.008;
+      pitch.current = Math.max(-1.5, Math.min(1.5, pitch.current + dy * 0.008));
+    }
     drag.current.x = e.clientX; drag.current.y = e.clientY;
   };
   const onUp = (e: React.PointerEvent) => {
@@ -309,7 +361,8 @@ export function Dynamics3DView() {
     // click select: nearest projected body within 14px.
     const rect = canvasRef.current!.getBoundingClientRect();
     const w = rect.width, h = rect.height;
-    const mvp = multiply(perspective(Math.PI / 4, (w / h) || 1, 0.1, 5000), orbitView(yaw.current, pitch.current, dist.current));
+    const t = target.current;
+    const mvp = multiply(perspective(Math.PI / 4, (w / h) || 1, 0.1, 5000), orbitViewAt(yaw.current, pitch.current, dist.current, t[0], t[1], t[2]));
     const mx = e.clientX - rect.left, my = e.clientY - rect.top;
     let best: string | null = null, bestD = 14;
     for (const b of simRef.current.bodies) {
@@ -446,7 +499,10 @@ export function Dynamics3DView() {
             <button onClick={() => camPreset(0, 1.55)} className={`${btn} bg-white/5 hover:bg-white/10`}>Top</button>
             <button onClick={() => camPreset(0, 0)} className={`${btn} bg-white/5 hover:bg-white/10`}>Front</button>
             <button onClick={() => camPreset(Math.PI / 2, 0)} className={`${btn} bg-white/5 hover:bg-white/10`}>Side</button>
+            <button onClick={() => { if (selected) target.current = [...selected.position] as Vec3; }} className={`${btn} bg-white/5 hover:bg-white/10`} title="Center camera on the selected body">Focus</button>
+            <button onClick={() => { target.current = [0, 0, 0]; }} className={`${btn} bg-white/5 hover:bg-white/10`}>Recenter</button>
           </div>
+          <p className="mt-1 text-[10px] leading-tight text-slate-500">Move: <b className="text-slate-400">WASD</b> + <b className="text-slate-400">Q/E</b> (up/down). Pan: <b className="text-slate-400">Shift/right-drag</b>. Orbit: drag · zoom: wheel.</p>
         </div>
 
         <div>
@@ -468,7 +524,7 @@ export function Dynamics3DView() {
       {/* 3D canvas */}
       <main className="relative min-w-0 flex-1">
         <canvas ref={canvasRef} className="h-full w-full touch-none" style={{ display: "block", cursor: "grab" }}
-          onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onWheel={onWheel} />
+          onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onWheel={onWheel} onContextMenu={(e) => e.preventDefault()} />
         {/* system readout */}
         <div className="pointer-events-none absolute left-2 top-2 rounded bg-black/50 px-2 py-1 font-mono text-[10px] text-slate-300">
           t = {rep.time.toFixed(3)} · steps {rep.steps} · dt {sim.dt.toFixed(3)} · bodies {rep.activeBodies}<br />
@@ -476,7 +532,7 @@ export function Dynamics3DView() {
           <span className={rep.energyDrift > 0.05 ? "text-amber-400" : "text-slate-500"}>ΔE {(rep.energyDrift * 100).toFixed(2)}%</span> ·
           {" "}<span className={rep.momentumDrift > 0.05 ? "text-amber-400" : "text-slate-500"}>Δp {(rep.momentumDrift * 100).toFixed(2)}%</span> · {rep.status}
         </div>
-        <div className="pointer-events-none absolute bottom-2 right-2 text-right text-[10px] text-slate-600">drag rotate · wheel zoom · click select</div>
+        <div className="pointer-events-none absolute bottom-2 right-2 text-right text-[10px] text-slate-600">drag orbit · shift/right-drag pan · WASD/QE fly · wheel zoom · click select</div>
 
         {/* inspector overlay */}
         {selected && (
