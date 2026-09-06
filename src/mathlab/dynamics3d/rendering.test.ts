@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import type { BodyType } from "./types.ts";
 import {
   getBodyVisualProfile, renderRadius, selectLOD, effectiveRenderMode, DEFAULT_VISUAL,
+  planetPalette, defaultPlanetVariant, PLANET_VARIANTS,
 } from "./rendering.ts";
 
 describe("getBodyVisualProfile (§37)", () => {
@@ -49,6 +50,23 @@ describe("selectLOD (§21/§22)", () => {
   it("low quality never returns full; high reaches full at small sizes", () => {
     expect(selectLOD(1000, "low", 1)).not.toBe("full");
     expect(selectLOD(10, "high", 1)).toBe("full");
+  });
+});
+
+describe("planet variants", () => {
+  it("every variant has a palette", () => {
+    for (const v of PLANET_VARIANTS) expect(typeof planetPalette(v).ocean).toBe("string");
+  });
+  it("distinct variants differ visually", () => {
+    expect(planetPalette("earth").continents).toBe(true);
+    expect(planetPalette("gas-giant").bands).toBe(true);
+    expect(planetPalette("lava").cracks).toBe(true);
+    expect(planetPalette("ringed").rings).toBe(true);
+    expect(planetPalette("rocky").craters).toBe(true);
+  });
+  it("defaultPlanetVariant cycles deterministically", () => {
+    expect(defaultPlanetVariant(0)).toBe(defaultPlanetVariant(PLANET_VARIANTS.length));
+    expect(defaultPlanetVariant(0)).not.toBe(defaultPlanetVariant(1));
   });
 });
 

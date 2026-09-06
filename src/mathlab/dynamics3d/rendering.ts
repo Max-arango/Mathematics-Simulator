@@ -60,6 +60,45 @@ export function effectiveRenderMode(cfg: BodyVisualConfig): BodyRenderMode {
   return cfg.performanceMode ? "minimal" : cfg.renderMode;
 }
 
+// ── Planet appearance variants (visual only) — lets the user tell planets apart
+//    without downloading any 3D assets: each is a light procedural recipe. ───────
+export type PlanetVariant = "earth" | "mars" | "gas-giant" | "ice" | "lava" | "rocky" | "ringed";
+export const PLANET_VARIANTS: PlanetVariant[] = ["earth", "mars", "gas-giant", "ice", "lava", "rocky", "ringed"];
+
+export interface PlanetPalette {
+  /** Base surface / "ocean" colour. */
+  ocean: string;
+  /** Secondary surface colour (continents / bands / craters / cracks). */
+  land: string;
+  /** Atmosphere halo colour. */
+  atmo: string;
+  bands: boolean;    // horizontal cloud/gas bands (gas giants, ice)
+  continents: boolean; // irregular land blobs (earth-like)
+  craters: boolean;  // dark pits (rocky/moon)
+  cracks: boolean;   // emissive fissures (lava)
+  rings: boolean;    // Saturn-style ring system
+  atmosphere: boolean; // draw the halo at all
+}
+
+const PALETTES: Record<PlanetVariant, PlanetPalette> = {
+  earth: { ocean: "#1e5fa8", land: "#3f8f4f", atmo: "#8fc2ff", bands: false, continents: true, craters: false, cracks: false, rings: false, atmosphere: true },
+  mars: { ocean: "#b4532a", land: "#7c3a1e", atmo: "#d98b6a", bands: false, continents: true, craters: true, cracks: false, rings: false, atmosphere: true },
+  "gas-giant": { ocean: "#c9a06a", land: "#9c6f3f", atmo: "#e8d3a8", bands: true, continents: false, craters: false, cracks: false, rings: false, atmosphere: true },
+  ice: { ocean: "#5fc7dd", land: "#3f9bbd", atmo: "#c8f2ff", bands: true, continents: false, craters: false, cracks: false, rings: false, atmosphere: true },
+  lava: { ocean: "#3a1210", land: "#ff6a2b", atmo: "#ff8a4a", bands: false, continents: false, craters: false, cracks: true, rings: false, atmosphere: true },
+  rocky: { ocean: "#9aa0a8", land: "#63686f", atmo: "#b8bcc4", bands: false, continents: false, craters: true, cracks: false, rings: false, atmosphere: false },
+  ringed: { ocean: "#d8c48f", land: "#b2965f", atmo: "#efe0bb", bands: true, continents: false, craters: false, cracks: false, rings: true, atmosphere: true },
+};
+
+export function planetPalette(variant: PlanetVariant): PlanetPalette {
+  return PALETTES[variant] ?? PALETTES.earth;
+}
+
+/** Deterministic default variant for the i-th planet in a scene (cycles the list). */
+export function defaultPlanetVariant(index: number): PlanetVariant {
+  return PLANET_VARIANTS[((index % PLANET_VARIANTS.length) + PLANET_VARIANTS.length) % PLANET_VARIANTS.length];
+}
+
 /**
  * DISPLAY radius in WORLD units — separate from the physical radius (§20/§35). A
  * physically tiny body is floored so it never vanishes, then scaled by the user's
