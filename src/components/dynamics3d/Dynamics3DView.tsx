@@ -16,6 +16,7 @@ import {
 import { makeScenario, SCENARIO_IDS, type ScenarioId } from "../../mathlab/dynamics3d/scenarios.ts";
 import { fieldAt, accelerationSources } from "../../mathlab/dynamics3d/field.ts";
 import { potentialAt, effectiveMass } from "../../mathlab/dynamics3d/potential.ts";
+import { sampleFieldGridZ, potentialSurfaceZ, traceFieldLine } from "../../mathlab/dynamics3d/fieldViz.ts";
 import type { Body3D, BodyType, Vec3 } from "../../mathlab/dynamics3d/types.ts";
 import type { Integrator } from "../../mathlab/dynamics3d/integrators.ts";
 import type { CollisionMode } from "../../mathlab/dynamics3d/types.ts";
@@ -32,6 +33,12 @@ const BODY_PRESETS: Record<string, Partial<Body3D> & { type: BodyType }> = {
   Star: { type: "star", mass: 200, radius: 0.8 },
   "Black Hole": { type: "black-hole", mass: 800, radius: 0.4, softening: 0.2, absorptionRadius: 0.6 },
   Singularity: { type: "singularity", mass: 500, radius: 0.4, softening: 0.3, absorptionRadius: 0.8 },
+};
+
+const VIZ_LABELS: Record<string, string> = {
+  bodies: "Bodies", trails: "Trails", axes: "Axes", grid: "Grid",
+  velocity: "Velocity", accel: "Acceleration", gravityField: "Gravity field",
+  deformation: "Space-time deform.", fieldLines: "Field lines",
 };
 
 const SUBSTEPS_PER_UNIT = 2; // physics substeps advanced per (speed=1) frame
@@ -58,8 +65,16 @@ export function Dynamics3DView() {
   const [collisionMode, setCollisionMode] = useState<CollisionMode>("ignore");
   const [trailLength, setTrailLength] = useState(400);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [viz, setViz] = useState({ bodies: true, trails: true, axes: true, grid: true, velocity: false, accel: false });
+  const [viz, setViz] = useState({
+    bodies: true, trails: true, axes: true, grid: true,
+    velocity: false, accel: false, gravityField: false, deformation: false, fieldLines: false,
+  });
+  const [fieldDensity, setFieldDensity] = useState(9);
+  const [deformScale, setDeformScale] = useState(0.05);
+  const [vectorScale, setVectorScale] = useState(1.5);
   const [, forceUI] = useState(0);
+
+  const FIELD_EXTENT = 22;
 
   // Camera (refs — smooth pointer updates without re-render).
   const yaw = useRef(0.9), pitch = useRef(0.5), dist = useRef(45);
@@ -76,6 +91,8 @@ export function Dynamics3DView() {
   const speedRef = useRef(speed); speedRef.current = speed;
   const vizRef = useRef(viz); vizRef.current = viz;
   const selRef = useRef(selectedId); selRef.current = selectedId;
+  const fieldCtl = useRef({ density: fieldDensity, deformScale, vectorScale });
+  fieldCtl.current = { density: fieldDensity, deformScale, vectorScale };
 
   // Load a scenario (also on dt change we just mutate sim.dt live).
   const loadScenario = (id: ScenarioId) => {
@@ -139,6 +156,61 @@ export function Dynamics3DView() {
         seg(ctx, P([-G, i, 0]), P([G, i, 0]));
       }
     }
+    // Space-time DEFORMATION PROXY (§7) — rubber sheet of the effective potential.
+    if (vizRef.current.deformation) {
+      const n = 24;
+      const surf = potentialSurfaceZ(sim.bodies, sim.params, FIELD_EXTENT, n, fieldCtl.current.deformScale, FIELD_EXTENT);
+      let minZ = 0;
+      for (const row of surf) for (const v of row) if (v.z < minZ) minZ = v.z;
+      const depth = (z: number) => (minZ < 0 ? z / minZ : 0); // 0..1, deeper = 1
+      ctx.lineWidth = 1;
+      for (let i = 0; i < n; i++) {
+        for (let j = 0; j < n; j++) {
+          const v = surf[i][j];
+          const p = P([v.x, v.y, v.z]);
+          if (i + 1 < n) { const q = P([surf[i + 1][j].x, surf[i + 1][j].y, surf[i + 1][j].z]); ctx.strokeStyle = `rgba(129,140,248,${0.12 + 0.5 * depth((v.z + surf[i + 1][j].z) / 2)})`; seg(ctx, p, q); }
+          if (j + 1 < n) { const q = P([surf[i][j + 1].x, surf[i][j + 1].y, surf[i][j + 1].z]); ctx.strokeStyle = `rgba(129,140,248,${0.12 + 0.5 * depth((v.z + surf[i][j + 1].z) / 2)})`; seg(ctx, p, q); }
+        }
+      }
+    }
+
+    // Gravity field vectors (§8) — direction of acceleration at each grid point.
+    if (vizRef.current.gravityField) {
+      const samples = sampleFieldGridZ(sim.bodies, sim.params, FIELD_EXTENT, fieldCtl.current.density, 0);
+      let ref = 1e-6;
+      for (const s of samples) if (s.mag > ref && Number.isFinite(s.mag)) ref = Math.max(ref, s.mag);
+      for (const s of samples) {
+        if (!(s.mag > 0) || !Number.isFinite(s.mag)) continue;
+        const u = 1 / s.mag;
+        const len = fieldCtl.current.vectorScale * (0.5 + 0.5 * Math.min(1, s.mag / ref));
+        const tip: Vec3 = [s.pos[0] + s.g[0] * u * len, s.pos[1] + s.g[1] * u * len, s.pos[2] + s.g[2] * u * len];
+        const a = P(s.pos), b = P(tip);
+        if (!a || !b) continue;
+        const inten = 0.25 + 0.6 * Math.min(1, s.mag / ref);
+        ctx.strokeStyle = `rgba(96,165,250,${inten})`; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+        ctx.fillStyle = `rgba(96,165,250,${inten})`; ctx.beginPath(); ctx.arc(b.x, b.y, 1.3, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+
+    // Field lines (§20) — integral curves of g, seeded on a ring, traced inward.
+    if (vizRef.current.fieldLines) {
+      const seeds = 20, R = FIELD_EXTENT * 0.75;
+      ctx.strokeStyle = "rgba(52,211,153,0.5)"; ctx.lineWidth = 1;
+      for (let k = 0; k < seeds; k++) {
+        const th = (2 * Math.PI * k) / seeds;
+        const line = traceFieldLine([Math.cos(th) * R, Math.sin(th) * R, 0], sim.bodies, sim.params, { steps: 80, ds: 0.5, bound: FIELD_EXTENT * 2 });
+        ctx.beginPath();
+        let started = false;
+        for (const p of line) {
+          const s = P(p);
+          if (!s) { started = false; continue; }
+          if (!started) { ctx.moveTo(s.x, s.y); started = true; } else ctx.lineTo(s.x, s.y);
+        }
+        ctx.stroke();
+      }
+    }
+
     // Axes X (red) / Y (green) / Z (blue).
     if (vizRef.current.axes) {
       const L = 12;
@@ -334,11 +406,19 @@ export function Dynamics3DView() {
           <h3 className="mb-1 text-[10px] uppercase tracking-wide text-slate-500">Visualization</h3>
           <div className="grid grid-cols-2 gap-x-2 gap-y-0.5">
             {(Object.keys(viz) as (keyof typeof viz)[]).map((k) => (
-              <label key={k} className="flex items-center gap-1.5 text-[11px] capitalize">
-                <input type="checkbox" checked={viz[k]} onChange={(e) => setViz((v) => ({ ...v, [k]: e.target.checked }))} />{k}
+              <label key={k} className="flex items-center gap-1.5 text-[11px]">
+                <input type="checkbox" checked={viz[k]} onChange={(e) => setViz((v) => ({ ...v, [k]: e.target.checked }))} />{VIZ_LABELS[k]}
               </label>
             ))}
           </div>
+          {(viz.gravityField || viz.deformation) && (
+            <div className="mt-1.5 space-y-0.5 rounded bg-black/30 p-1.5">
+              {(viz.gravityField || viz.fieldLines) && <Range label="density" value={fieldDensity} min={5} max={17} step={2} onChange={setFieldDensity} fmt={(v) => String(v)} />}
+              {viz.gravityField && <Range label="vec scale" value={vectorScale} min={0.5} max={5} step={0.5} onChange={setVectorScale} fmt={(v) => v.toFixed(1)} />}
+              {viz.deformation && <Range label="deform" value={deformScale} min={0.01} max={0.3} step={0.01} onChange={setDeformScale} fmt={(v) => v.toFixed(2)} />}
+              <p className="text-[9px] leading-tight text-slate-500">Field/deformation visualise the effective potential — not the Einstein metric.</p>
+            </div>
+          )}
         </div>
 
         <div>
