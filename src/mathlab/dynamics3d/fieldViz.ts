@@ -31,14 +31,20 @@ export interface SurfaceVertex { x: number; y: number; z: number; phi: number; }
 
 /**
  * Space-time DEFORMATION PROXY: a deformed sheet over the z=0 plane whose height
- * is z = clamp(scale·Φ(x,y,0), −maxDepth, 0). Φ ≤ 0 so the sheet DIPS into wells —
- * the familiar "rubber sheet". Returns an (n×n) vertex grid for wireframe drawing.
- * This visualises the effective POTENTIAL, not the metric tensor (§7/§37).
+ * dips into wells (Φ ≤ 0) — the familiar "rubber sheet". Returns an (n×n) vertex
+ * grid for wireframe drawing. Visualises the effective POTENTIAL, not the metric
+ * tensor (§7/§37).
+ *
+ * SMOOTH depth mapping (no corners): z = −maxDepth · tanh(scale·|Φ| / maxDepth).
+ * A hard clamp would flatten deep wells into a disc with a sharp rim/corner at each
+ * singularity; tanh saturates ASYMPTOTICALLY so the surface stays smooth (C¹) all the
+ * way to the bottom. Combined with a high grid resolution the curvature reads cleanly.
  */
 export function potentialSurfaceZ(
   bodies: Body3D[], params: FieldParams, extent: number, n: number, scale: number, maxDepth = extent,
 ): SurfaceVertex[][] {
   const span = 2 * extent;
+  const md = Math.max(1e-6, maxDepth);
   const grid: SurfaceVertex[][] = [];
   for (let i = 0; i < n; i++) {
     const row: SurfaceVertex[] = [];
@@ -46,7 +52,8 @@ export function potentialSurfaceZ(
       const x = -extent + (span * i) / (n - 1);
       const y = -extent + (span * j) / (n - 1);
       const phi = potentialAt([x, y, 0], bodies, params);
-      const z = Math.max(-maxDepth, scale * phi); // phi<0 ⇒ z<0 (dip); clamp the spike
+      // phi ≤ 0 ⇒ depth ≥ 0; tanh gives a smooth, corner-free well.
+      const z = -md * Math.tanh((scale * -phi) / md);
       row.push({ x, y, z, phi });
     }
     grid.push(row);

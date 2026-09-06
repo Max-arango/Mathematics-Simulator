@@ -16,7 +16,7 @@ import {
 import { makeScenario, SCENARIO_IDS, type ScenarioId } from "../../mathlab/dynamics3d/scenarios.ts";
 import { fieldAt, accelerationSources } from "../../mathlab/dynamics3d/field.ts";
 import { potentialAt, effectiveMass } from "../../mathlab/dynamics3d/potential.ts";
-import { sampleFieldGridZ, potentialSurfaceZ, traceFieldLine } from "../../mathlab/dynamics3d/fieldViz.ts";
+import { sampleFieldGridZ, potentialSurfaceZ, traceFieldLine, type SurfaceVertex } from "../../mathlab/dynamics3d/fieldViz.ts";
 import type { Body3D, BodyType, Vec3 } from "../../mathlab/dynamics3d/types.ts";
 import type { Integrator } from "../../mathlab/dynamics3d/integrators.ts";
 import type { CollisionMode } from "../../mathlab/dynamics3d/types.ts";
@@ -93,6 +93,9 @@ export function Dynamics3DView() {
   const selRef = useRef(selectedId); selRef.current = selectedId;
   const fieldCtl = useRef({ density: fieldDensity, deformScale, vectorScale, deformRes, extent: fieldExtent });
   fieldCtl.current = { density: fieldDensity, deformScale, vectorScale, deformRes, extent: fieldExtent };
+  // Cache the deformation sheet — recompute only when bodies/controls change, so a
+  // high-resolution grid stays smooth while orbiting a paused scene.
+  const surfCache = useRef<{ key: string; surf: SurfaceVertex[][]; minZ: number } | null>(null);
 
   // Load a scenario (also on dt change we just mutate sim.dt live).
   const loadScenario = (id: ScenarioId) => {
@@ -160,9 +163,21 @@ export function Dynamics3DView() {
     // Space-time DEFORMATION PROXY (§7) — rubber sheet of the effective potential.
     if (vizRef.current.deformation) {
       const n = fieldCtl.current.deformRes;
-      const surf = potentialSurfaceZ(sim.bodies, sim.params, EXT, n, fieldCtl.current.deformScale, EXT);
-      let minZ = 0;
-      for (const row of surf) for (const v of row) if (v.z < minZ) minZ = v.z;
+      // Bodies signature: recompute the sheet only when a source actually changes
+      // (moved / mass / strength edited), not on every camera-only frame.
+      let sig = 0;
+      for (const b of sim.bodies) if (b.active) sig += b.position[0] + 2.1 * b.position[1] + 3.7 * b.mass + 5.3 * b.gravitationalStrength + (b.softening ?? 0);
+      const key = `${n}|${EXT}|${fieldCtl.current.deformScale}|${sig}`;
+      let cache = surfCache.current;
+      if (!cache || cache.key !== key) {
+        const surf = potentialSurfaceZ(sim.bodies, sim.params, EXT, n, fieldCtl.current.deformScale, EXT);
+        let mz = 0;
+        for (const row of surf) for (const v of row) if (v.z < mz) mz = v.z;
+        cache = { key, surf, minZ: mz };
+        surfCache.current = cache;
+      }
+      const surf = cache.surf;
+      const minZ = cache.minZ;
       const depth = (z: number) => (minZ < 0 ? z / minZ : 0); // 0..1, deeper = 1
       ctx.lineWidth = 1;
       for (let i = 0; i < n; i++) {
@@ -416,7 +431,7 @@ export function Dynamics3DView() {
             <div className="mt-1.5 space-y-0.5 rounded bg-black/30 p-1.5">
               {(viz.gravityField || viz.fieldLines) && <Range label="density" value={fieldDensity} min={5} max={17} step={2} onChange={setFieldDensity} fmt={(v) => String(v)} />}
               {viz.gravityField && <Range label="vec scale" value={vectorScale} min={0.5} max={5} step={0.5} onChange={setVectorScale} fmt={(v) => v.toFixed(1)} />}
-              {viz.deformation && <Range label="grid" value={deformRes} min={8} max={48} step={2} onChange={setDeformRes} fmt={(v) => `${v}²`} />}
+              {viz.deformation && <Range label="grid" value={deformRes} min={8} max={160} step={4} onChange={setDeformRes} fmt={(v) => `${v}²`} />}
               {viz.deformation && <Range label="deform" value={deformScale} min={0.01} max={0.4} step={0.01} onChange={setDeformScale} fmt={(v) => v.toFixed(2)} />}
               <Range label="extent" value={fieldExtent} min={8} max={60} step={2} onChange={setFieldExtent} fmt={(v) => String(v)} />
               <p className="text-[9px] leading-tight text-slate-500">Field/deformation visualise the effective potential — not the Einstein metric.</p>
