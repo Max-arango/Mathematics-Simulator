@@ -39,6 +39,16 @@ export interface ManifoldOptions {
   h?: number;
 }
 
+/** Truncate a polyline at the first non-finite point — same convention as
+ *  nullclines.ts's safeComp: never hand the renderer a NaN/Inf point. The
+ *  current fixed-step/adaptive solvers already stop before appending a
+ *  non-finite state, but `trace()` doesn't rely on that solver-internal
+ *  invariant holding for every future method. Exported for direct testing. */
+export function finitePrefix(pts: Vec[]): Vec[] {
+  const firstBad = pts.findIndex((p) => !p.every(Number.isFinite));
+  return firstBad === -1 ? pts : pts.slice(0, firstBad);
+}
+
 /**
  * Approximate the stable & unstable manifolds of a 2-D continuous saddle at
  * `point`. Returns null if the system is not a 2-D flow or the equilibrium is
@@ -70,7 +80,7 @@ export function saddleManifolds(
   const off = (v: Vec, s: 1 | -1): Vec => [point[0] + s * eps * v[0], point[1] + s * eps * v[1]];
   const trace = (seed: Vec, direction: "forward" | "backward"): Vec[] => {
     const { states } = simulate(sys, seed, { method: "rk4", t0: 0, t1: span, h, direction });
-    return [point.slice(), ...states];
+    return [point.slice(), ...finitePrefix(states)];
   };
 
   return {
