@@ -248,11 +248,11 @@ export function Dynamics3DView() {
               // Replay recorded frames forward until we catch the live edge.
               const ph = Math.min(end, playheadRef.current + n);
               playheadRef.current = ph >= end ? -1 : ph;
-            } else if (sim.status !== "numericalFailure" && sim.status !== "completed") {
+            } else if (modelModeRef.current === "gravity" && sim.status !== "numericalFailure" && sim.status !== "completed") {
               stepSimulation(sim, n, true); // live edge → simulate new frames
               playheadRef.current = -1;
             } else {
-              setPlaying(false); // at the live edge but can't advance further
+              setPlaying(false); // at the live edge but can't advance further (or not in gravity mode)
             }
           }
         }
@@ -574,9 +574,13 @@ export function Dynamics3DView() {
     const rect = canvasRef.current!.getBoundingClientRect();
     const w = rect.width, h = rect.height;
     // Click-to-place: if armed, spawn at ray ∩ spawn-plane and consume the click (§12).
+    // Gravity-only — placeArm can be left armed from before a mode switch, and the
+    // Mathematical Field model must never be mutated into the gravity Simulation.
     if (placeRef.current) {
-      const p = screenToPlane(e.clientX - rect.left, e.clientY - rect.top, w, h, spawnZRef.current);
-      if (p) spawnBodyAt(placeRef.current.preset, placeRef.current.variant, p);
+      if (modelModeRef.current === "gravity") {
+        const p = screenToPlane(e.clientX - rect.left, e.clientY - rect.top, w, h, spawnZRef.current);
+        if (p) spawnBodyAt(placeRef.current.preset, placeRef.current.variant, p);
+      }
       setPlaceArm(null);
       return;
     }
