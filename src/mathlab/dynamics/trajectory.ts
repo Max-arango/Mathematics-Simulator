@@ -37,6 +37,10 @@ const DEFAULT_DISCRETE_STEPS = 100;
  * (default rk4); discrete runs iterate the map. Throws InvalidInputError on a bad
  * request and ResourceLimitError if a discrete run would exceed MAX_ODE_STEPS.
  */
+// EXTENSION POINT (ADR-003): a Poincaré section would sample `states` at crossings
+// of a chosen hyperplane; a Lyapunov exponent estimate would track the divergence
+// of two nearby trajectories over the same integration — both are consumers of
+// this generic simulate(), not new engine. Not implemented here.
 export function simulate(
   sys: DynamicalSystem,
   x0: Vec,

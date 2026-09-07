@@ -124,6 +124,9 @@ function classifyDiscrete(vals: Complex[]): { type: Classification; reason: stri
  * `confidence:"numerical"`. Applies the KIND-appropriate criterion (Re λ vs |λ|); returns
  * "inconclusive" for non-hyperbolic cases and when the eigensolver failed to converge.
  */
+// EXTENSION POINT (ADR-003): parameter-continuation / bifurcation-detection would
+// call this repeatedly across a parameter sweep and watch the classification
+// (and eigenvalues) change — not implemented here, just where it would consume this.
 export function classifyEquilibrium(sys: DynamicalSystem, point: Vec): StabilityResult {
   const J = jacobianAtPoint(sys, point);
   const e = eigen(J);
