@@ -21,7 +21,7 @@ import { sampleMathFieldGrid3D, traceMathTrajectory3D, type MathFieldGridSample 
 import { makeSystem, type DynamicalSystem } from "../../mathlab/dynamics/system.ts";
 import type { Body3D, BodyType, Vec3 } from "../../mathlab/dynamics3d/types.ts";
 import type { Integrator } from "../../mathlab/dynamics3d/integrators.ts";
-import type { CollisionMode } from "../../mathlab/dynamics3d/types.ts";
+import type { CollisionMode, GravityModel } from "../../mathlab/dynamics3d/types.ts";
 import {
   getBodyVisualProfile, renderRadius, selectLOD, effectiveRenderMode,
   planetPalette, defaultPlanetVariant, PLANET_VARIANTS,
@@ -76,6 +76,9 @@ export function Dynamics3DView() {
   const [speed, setSpeed] = useState(1);
   const [dt, setDt] = useState(0.005);
   const [integrator, setIntegrator] = useState<Integrator>("verlet");
+  // Newtonian gravity model — "softened" (default, Plummer-regularised, finite
+  // everywhere) vs "exact" (unsoftened 1/r², clamped near r=0). See gravityModel.ts.
+  const [gravityModel, setGravityModel] = useState<GravityModel>("softened");
   const [collisionMode, setCollisionMode] = useState<CollisionMode>("ignore");
   const [trailLength, setTrailLength] = useState(400);
   const [historyCap, setHistoryCap] = useState(20000); // recorded frames for time scrubbing
@@ -189,6 +192,7 @@ export function Dynamics3DView() {
   const loadScenario = (id: ScenarioId) => {
     const sc = makeScenario(id);
     simRef.current = createSimulation(sc.bodies, { dt: sc.dt, integrator, collisionMode, trailLength, maxHistory: historyCap });
+    simRef.current.params.model = gravityModel;
     assignDefaultVariants(simRef.current);
     playheadRef.current = -1;
     setScenarioId(id);
@@ -218,6 +222,7 @@ export function Dynamics3DView() {
   // Keep sim settings synced when the user changes them.
   useEffect(() => { simRef.current.dt = dt; }, [dt]);
   useEffect(() => { simRef.current.integrator = integrator; }, [integrator]);
+  useEffect(() => { simRef.current.params.model = gravityModel; }, [gravityModel]);
   useEffect(() => { simRef.current.collisionMode = collisionMode; }, [collisionMode]);
   useEffect(() => { simRef.current.trailLength = trailLength; }, [trailLength]);
   useEffect(() => {
@@ -702,6 +707,19 @@ export function Dynamics3DView() {
             className="w-full rounded bg-slate-800/80 px-2 py-1 text-xs text-cyan-100 outline-none">
             {SCENARIO_IDS.map((id) => <option key={id} value={id}>{makeScenario(id).name}</option>)}
           </select>
+        </div>
+
+        <div>
+          <h3 className="mb-1 text-[10px] uppercase tracking-wide text-slate-500">Gravity model</h3>
+          <div className="flex gap-1">
+            <button onClick={() => setGravityModel("softened")} className={`${chip(gravityModel === "softened")} flex-1`}>Softened</button>
+            <button onClick={() => setGravityModel("exact")} className={`${chip(gravityModel === "exact")} flex-1`}>Exact</button>
+          </div>
+          <p className="mt-1 text-[10px] leading-tight text-slate-500">
+            {gravityModel === "exact"
+              ? "Unsoftened 1/r² Newton's law — ε (softening) is ignored; clamped near r=0 instead of blowing up."
+              : "Plummer-softened 1/r² — finite everywhere, uses per-body/global ε (softening)."}
+          </p>
         </div>
 
         {/* ── Body rendering (visual only — switching never touches physics, §4/§51). ── */}
