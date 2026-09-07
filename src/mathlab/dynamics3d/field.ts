@@ -13,8 +13,11 @@
 // independent of m_i, driven by the sources' effectiveMass.
 //
 // Reuses mathlab/linear/vector (sub/scale/norm) — no bespoke vector algebra.
+// Φ/g formulas live in gravityModel.ts (single seam, shared with potential.ts and
+// metrics.ts — see TASK-002 phase 4); this file only assembles the N-body sum.
 import { norm } from "../linear/vector.ts";
 import { effectiveMass } from "./potential.ts";
+import { gravityField, resolveModel } from "./gravityModel.ts";
 import type { Body3D, FieldParams, Vec3 } from "./types.ts";
 
 const ZERO: Vec3 = [0, 0, 0];
@@ -27,6 +30,7 @@ const ZERO: Vec3 = [0, 0, 0];
 export function fieldAt(
   x: Vec3, bodies: Body3D[], params: FieldParams, exclude?: string,
 ): Vec3 {
+  const model = resolveModel(params);
   let gx = 0, gy = 0, gz = 0;
   for (const b of bodies) {
     if (!b.active || b.id === exclude) continue;
@@ -37,9 +41,8 @@ export function fieldAt(
     const dy = b.position[1] - x[1];
     const dz = b.position[2] - x[2];
     const r2 = dx * dx + dy * dy + dz * dz;
-    const denom = Math.pow(r2 + eps * eps, 1.5);
-    const f = (params.G * M) / denom;
-    gx += f * dx; gy += f * dy; gz += f * dz;
+    const { g } = gravityField([dx, dy, dz], r2, params.G, M, eps, model);
+    gx += g[0]; gy += g[1]; gz += g[2];
   }
   return [gx, gy, gz];
 }

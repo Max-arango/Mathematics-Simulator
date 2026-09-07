@@ -36,15 +36,26 @@ export interface Body3D {
   absorptionRadius?: number;
 }
 
+/**
+ * Newtonian gravity model (see gravityModel.ts for the shared Φ/g implementation):
+ *   - "softened": Plummer-regularised, finite everywhere by construction.
+ *   - "exact": unsoftened 1/r² Newton's law, clamped (with a visible `hitFloor`
+ *     flag) near r=0 instead of silently falling back to "softened".
+ */
+export type GravityModel = "exact" | "softened";
+
 /** Field/model parameters shared across evaluations. */
 export interface FieldParams {
   /** Effective gravitational constant (experimental; default 1 in dimensionless units). */
   G: number;
-  /** Global Plummer softening ε (length). Prevents the 1/r² singularity blowing up. */
+  /** Global Plummer softening ε (length). Prevents the 1/r² singularity blowing up.
+   *  Unused when `model === "exact"`. */
   softening: number;
+  /** Gravity model — defaults to "softened" when omitted (see resolveModel). */
+  model?: GravityModel;
 }
 
-export const DEFAULT_FIELD: FieldParams = { G: 1, softening: 0.05 };
+export const DEFAULT_FIELD: FieldParams = { G: 1, softening: 0.05, model: "softened" };
 
 export type SimulationStatus =
   | "running" | "paused" | "completed" | "numericalFailure" | "unstable";
