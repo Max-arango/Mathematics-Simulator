@@ -46,6 +46,43 @@ describe("findEquilibria (continuous)", () => {
   });
 });
 
+describe("findEquilibria: distinguishing non-convergence from genuine absence", () => {
+  it("reports 'did not converge' (not silently 'no equilibria') when every seed hits a singular Jacobian", () => {
+    // Constant nonzero field: g(x) = field(x) = 1 everywhere (never near zero,
+    // so Newton actually iterates) but J = [[0]] is singular at every point,
+    // so every seed's very first step fails. Before this fix, this returned
+    // { points: [], note: NOTE } — indistinguishable from a system that
+    // genuinely has no equilibria in the search region.
+    const sys = makeSystem(["x"], ["1"], {}, "continuous");
+    const { points, note } = findEquilibria(sys, { seeds: [[1], [2], [3]], tol: 1e-15 });
+    expect(points.length).toBe(0);
+    expect(note).toMatch(/3\/3 seeds did not converge/);
+    expect(note).toMatch(/singular Jacobian/);
+    // Still honest about being numerical, not a proof.
+    expect(note).toMatch(/NUMERICAL CANDIDATES/);
+  });
+
+  it("reports the vacuous case distinctly when no seeds were even attempted", () => {
+    const sys = makeSystem(["x"], ["x*(1-x)"], {}, "continuous");
+    const { points, note } = findEquilibria(sys, { seeds: [] });
+    expect(points.length).toBe(0);
+    expect(note).toMatch(/no equilibria found in search region/);
+    expect(note).not.toMatch(/did not converge/);
+  });
+
+  it("normal 'found some' case keeps the original note (no false failure noise)", () => {
+    const sys = makeSystem(["x"], ["x*(1-x)"], {}, "continuous");
+    const { points, note } = findEquilibria(sys);
+    expect(points.length).toBeGreaterThan(0);
+    expect(note).toBe(
+      "NUMERICAL CANDIDATES: equilibria found by Newton iteration from a finite seed set. " +
+        "This is not a proof of existence or completeness — roots outside the seeds' basins are " +
+        "missed and near-degenerate (singular-Jacobian) roots are skipped. Widen the range, raise " +
+        "gridPoints, or pass explicit seeds to search more of state space.",
+    );
+  });
+});
+
 describe("findEquilibria (discrete)", () => {
   it("logistic map r*x*(1-x), r=2 → fixed points 0 and 0.5", () => {
     const sys = makeSystem(["x"], ["r*x*(1-x)"], { r: 2 }, "discrete");

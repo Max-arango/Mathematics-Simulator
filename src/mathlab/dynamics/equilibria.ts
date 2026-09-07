@@ -77,23 +77,31 @@ function seedsFor(sys: DynamicalSystem, opts: EquilibriaOptions): Vec[] {
 const residual = (sys: DynamicalSystem, x: Vec): Vec =>
   sys.kind === "discrete" ? sub(evalField(sys, x), x) : evalField(sys, x);
 
-// One Newton run from a seed. Returns the converged root or null (singular step,
-// non-finite iterate, or cap reached without converging).
-function newton(sys: DynamicalSystem, seed: Vec, tol: number, maxIter: number): Vec | null {
+/** Per-seed Newton outcome — lets callers tell "no root here" apart from
+ *  "the solver never got a real chance" (singular Jacobian) or "ran out of
+ *  iterations" (a non-finite blow-up mid-iteration is bucketed here too:
+ *  the Jacobian itself was still invertible, Newton just didn't land). */
+type NewtonOutcome =
+  | { status: "converged"; x: Vec }
+  | { status: "singular" }
+  | { status: "capReached" };
+
+// One Newton run from a seed.
+function newton(sys: DynamicalSystem, seed: Vec, tol: number, maxIter: number): NewtonOutcome {
   let x = seed.slice();
   for (let iter = 0; iter < maxIter; iter++) {
     const g = residual(sys, x);
-    if (!g.every(Number.isFinite)) return null;
-    if (norm(g) < tol) return x;
+    if (!g.every(Number.isFinite)) return { status: "capReached" };
+    if (norm(g) < tol) return { status: "converged", x };
     // Residual Jacobian: J_field for a flow, J_field − I for a map (d/dx of field(x)−x).
     const jf = jacobianField(sys, x);
     const a = sys.kind === "discrete" ? jf.map((row, i) => row.map((v, j) => (i === j ? v - 1 : v))) : jf;
     const delta = solve(make(a), scale(g, -1));
-    if (delta === null) return null; // singular Jacobian → no Newton step here
+    if (delta === null) return { status: "singular" }; // singular Jacobian → no Newton step here
     x = add(x, delta);
   }
   const g = residual(sys, x);
-  return g.every(Number.isFinite) && norm(g) < tol ? x : null;
+  return g.every(Number.isFinite) && norm(g) < tol ? { status: "converged", x } : { status: "capReached" };
 }
 
 /**
@@ -109,10 +117,37 @@ export function findEquilibria(
   const maxIter = opts.maxIter ?? MAX_ITERATIONS;
   const dedupeTol = opts.dedupeTol ?? DEFAULT_DEDUPE;
 
+  const seeds = seedsFor(sys, opts);
   const points: Vec[] = [];
-  for (const seed of seedsFor(sys, opts)) {
-    const root = newton(sys, seed, tol, maxIter);
-    if (root && !points.some((p) => distance(p, root) < dedupeTol)) points.push(root);
+  let singularCount = 0;
+  let capReachedCount = 0;
+  for (const seed of seeds) {
+    const outcome = newton(sys, seed, tol, maxIter);
+    if (outcome.status === "converged") {
+      if (!points.some((p) => distance(p, outcome.x) < dedupeTol)) points.push(outcome.x);
+    } else if (outcome.status === "singular") {
+      singularCount++;
+    } else {
+      capReachedCount++;
+    }
   }
-  return { points, note: NOTE };
+
+  // Zero candidates found: distinguish "every seed failed to converge" (the
+  // solver never actually confirmed absence) from "no seeds even ran" — both
+  // are legitimately "nothing found", but the former should not be read as
+  // proof there's no equilibrium nearby.
+  let note = NOTE;
+  if (points.length === 0) {
+    const failed = singularCount + capReachedCount;
+    if (failed > 0) {
+      const reason =
+        singularCount === failed ? "singular Jacobian"
+        : capReachedCount === failed ? "iteration cap reached"
+        : "singular Jacobian and iteration cap reached";
+      note = `${failed}/${seeds.length} seeds did not converge (${reason}). ${NOTE}`;
+    } else {
+      note = `no equilibria found in search region. ${NOTE}`;
+    }
+  }
+  return { points, note };
 }
