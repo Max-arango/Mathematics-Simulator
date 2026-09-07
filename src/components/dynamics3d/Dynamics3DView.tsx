@@ -6,7 +6,7 @@
 // exactly like the 4D view: true (x,y,z) positions projected through an orbit camera,
 // NOT a 2D fake (§6). This is an EFFECTIVE gravitational-field model — a visual
 // space-time approximation, NOT the Einstein metric (§2, §37).
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { perspective, multiply, orbitViewAt, orbitBasis, type Mat4 } from "../graph/mat4.ts";
 import { norm } from "../../mathlab/linear/vector.ts";
 import {
@@ -17,6 +17,8 @@ import { makeScenario, SCENARIO_IDS, type ScenarioId } from "../../mathlab/dynam
 import { fieldAt, accelerationSources } from "../../mathlab/dynamics3d/field.ts";
 import { potentialAt, effectiveMass } from "../../mathlab/dynamics3d/potential.ts";
 import { sampleFieldGridZ, potentialSurfaceZ, traceFieldLine, type SurfaceVertex } from "../../mathlab/dynamics3d/fieldViz.ts";
+import { sampleMathFieldGrid3D, traceMathTrajectory3D, type MathFieldGridSample } from "../../mathlab/dynamics3d/mathField.ts";
+import { makeSystem, type DynamicalSystem } from "../../mathlab/dynamics/system.ts";
 import type { Body3D, BodyType, Vec3 } from "../../mathlab/dynamics3d/types.ts";
 import type { Integrator } from "../../mathlab/dynamics3d/integrators.ts";
 import type { CollisionMode } from "../../mathlab/dynamics3d/types.ts";
@@ -62,6 +64,11 @@ function projectP(mvp: Mat4, x: number, y: number, z: number, w: number, h: numb
 export function Dynamics3DView() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
+  // Model: "gravity" is the existing N-body engine (default, unchanged below);
+  // "mathfield" is an independent arbitrary 3D vector field (Phase 2, ADR-003) —
+  // it does not touch the gravity Simulation at all.
+  const [modelMode, setModelMode] = useState<"gravity" | "mathfield">("gravity");
+
   // System / controls (React state → drives sim settings + sidebar).
   const [scenarioId, setScenarioId] = useState<ScenarioId>("planetary");
   const [playing, setPlaying] = useState(false);
@@ -102,6 +109,22 @@ export function Dynamics3DView() {
   const [fieldExtent, setFieldExtent] = useState(22); // sheet / field half-size
   const [, forceUI] = useState(0);
 
+  // ── Mathematical Field model (Phase 2) — independent of the gravity Simulation. ──
+  const [mfx, setMfx] = useState("y");
+  const [mfy, setMfy] = useState("-x");
+  const [mfz, setMfz] = useState("0");
+  const [mfError, setMfError] = useState<string | null>(null);
+  const [mfExtent, setMfExtent] = useState(8);     // sample-box half-size
+  const [mfRes, setMfRes] = useState(5);           // grid points per axis (res³ arrows)
+  const [mfArrowScale, setMfArrowScale] = useState(1);
+  const [mfProbeCount, setMfProbeCount] = useState(6);
+
+  // Parse the field (same try/catch-into-error-state pattern as the 2D DynamicsView).
+  const mathSys = useMemo<DynamicalSystem | null>(() => {
+    try { setMfError(null); return makeSystem(["x", "y", "z"], [mfx, mfy, mfz]); }
+    catch (e) { setMfError(e instanceof Error ? e.message : String(e)); return null; }
+  }, [mfx, mfy, mfz]);
+
   // Camera (refs — smooth pointer updates without re-render).
   const yaw = useRef(0.9), pitch = useRef(0.5), dist = useRef(45);
   // Camera TARGET — the point the orbit revolves around. Pan/fly moves it so the
@@ -125,6 +148,16 @@ export function Dynamics3DView() {
   const selRef = useRef(selectedId); selRef.current = selectedId;
   const fieldCtl = useRef({ density: fieldDensity, deformScale, vectorScale, deformRes, extent: fieldExtent });
   fieldCtl.current = { density: fieldDensity, deformScale, vectorScale, deformRes, extent: fieldExtent };
+  const modelModeRef = useRef(modelMode); modelModeRef.current = modelMode;
+  const mathSysRef = useRef(mathSys); mathSysRef.current = mathSys;
+  const mfCtl = useRef({ extent: mfExtent, res: mfRes, arrowScale: mfArrowScale, probeCount: mfProbeCount });
+  mfCtl.current = { extent: mfExtent, res: mfRes, arrowScale: mfArrowScale, probeCount: mfProbeCount };
+  // Sampled arrows + probe streamlines — recomputed only when the field source or
+  // sampling controls change (keyed on the sys reference + a param string), never
+  // per animation frame (§ physics/sampling stays out of the rAF hot path).
+  const mfCache = useRef<{ sys: DynamicalSystem | null; key: string; grid: MathFieldGridSample | null; probes: Vec3[][] }>({
+    sys: null, key: "", grid: null, probes: [],
+  });
   const visualRef = useRef<BodyVisualConfig & { labels: boolean }>({
     renderMode: renderModeUI, quality, scale: bodyScale,
     showAtmosphere: effects.atmosphere, showGlow: effects.glow, showAccretionDisk: effects.accretionDisk,
@@ -306,8 +339,10 @@ export function Dynamics3DView() {
         seg(ctx, P([-G, i, 0]), P([G, i, 0]));
       }
     }
+    const gravityMode = modelModeRef.current === "gravity";
+
     // Space-time DEFORMATION PROXY (§7) — rubber sheet of the effective potential.
-    if (vizRef.current.deformation) {
+    if (gravityMode && vizRef.current.deformation) {
       const n = perfMode ? Math.min(fieldCtl.current.deformRes, 16) : fieldCtl.current.deformRes;
       // Bodies signature: recompute the sheet only when a source actually changes
       // (moved / mass / strength edited), not on every camera-only frame.
@@ -337,7 +372,7 @@ export function Dynamics3DView() {
     }
 
     // Gravity field vectors (§8) — direction of acceleration at each grid point.
-    if (vizRef.current.gravityField) {
+    if (gravityMode && vizRef.current.gravityField) {
       const samples = sampleFieldGridZ(bodies, sim.params, EXT, perfMode ? Math.min(fieldCtl.current.density, 7) : fieldCtl.current.density, 0);
       let ref = 1e-6;
       for (const s of samples) if (s.mag > ref && Number.isFinite(s.mag)) ref = Math.max(ref, s.mag);
@@ -356,7 +391,7 @@ export function Dynamics3DView() {
     }
 
     // Field lines (§20) — integral curves of g, seeded on a ring, traced inward.
-    if (vizRef.current.fieldLines) {
+    if (gravityMode && vizRef.current.fieldLines) {
       const seeds = 20, R = EXT * 0.75;
       ctx.strokeStyle = "rgba(52,211,153,0.5)"; ctx.lineWidth = 1;
       for (let k = 0; k < seeds; k++) {
@@ -381,8 +416,71 @@ export function Dynamics3DView() {
       axis(ctx, P([0, 0, 0]), P([0, 0, L]), "#60a5fa", "Z");
     }
 
+    // Mathematical Field mode (Phase 2, ADR-003) — sampled arrows + probe streamlines
+    // of a user-defined F: R³→R³. Independent of the gravity Simulation. Grid/probes
+    // are cached in mfCache, recomputed only when the field or sampling controls
+    // change — never re-sampled on a camera-only frame.
+    if (!gravityMode) {
+      const sys = mathSysRef.current;
+      const ctl = mfCtl.current;
+      const gc = mfCache.current;
+      const key = `${ctl.extent}|${ctl.res}|${ctl.probeCount}`;
+      if (sys && (gc.sys !== sys || gc.key !== key)) {
+        const b = ctl.extent;
+        gc.grid = sampleMathFieldGrid3D(sys, { min: [-b, -b, -b], max: [b, b, b] }, ctl.res);
+        const probes: Vec3[][] = [];
+        for (let i = 0; i < ctl.probeCount; i++) {
+          const ang = (2 * Math.PI * i) / Math.max(1, ctl.probeCount);
+          const seed: Vec3 = [Math.cos(ang) * b * 0.5, Math.sin(ang) * b * 0.5, 0];
+          const { points } = traceMathTrajectory3D(sys, seed, {
+            dt: Math.max(0.005, b * 0.004), maxSteps: 400,
+            bounds: { min: [-b * 3, -b * 3, -b * 3], max: [b * 3, b * 3, b * 3] },
+          });
+          probes.push(points);
+        }
+        gc.probes = probes;
+        gc.sys = sys; gc.key = key;
+      } else if (!sys) {
+        gc.sys = null; gc.grid = null; gc.probes = [];
+      }
+
+      if (gc.grid) {
+        let ref = 1e-6;
+        for (const v of gc.grid.vectors) { const m = Math.hypot(v[0], v[1], v[2]); if (Number.isFinite(m)) ref = Math.max(ref, m); }
+        for (let i = 0; i < gc.grid.points.length; i++) {
+          const p = gc.grid.points[i], v = gc.grid.vectors[i];
+          const mag = Math.hypot(v[0], v[1], v[2]);
+          if (!(mag > 0) || !Number.isFinite(mag)) continue;
+          const len = ctl.arrowScale * (0.5 + 0.5 * Math.min(1, mag / ref));
+          const u = 1 / mag;
+          const tip: Vec3 = [p[0] + v[0] * u * len, p[1] + v[1] * u * len, p[2] + v[2] * u * len];
+          const a = P(p), z = P(tip);
+          if (!a || !z) continue;
+          const inten = 0.3 + 0.6 * Math.min(1, mag / ref);
+          ctx.strokeStyle = `rgba(232,121,249,${inten})`; ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(z.x, z.y); ctx.stroke();
+          ctx.fillStyle = `rgba(232,121,249,${inten})`; ctx.beginPath(); ctx.arc(z.x, z.y, 1.3, 0, Math.PI * 2); ctx.fill();
+        }
+      }
+      ctx.strokeStyle = "rgba(52,211,153,0.6)"; ctx.lineWidth = 1.2;
+      for (const line of gc.probes) {
+        ctx.beginPath();
+        let started = false;
+        for (const p of line) {
+          const s = P(p);
+          if (!s) { started = false; continue; }
+          if (!started) { ctx.moveTo(s.x, s.y); started = true; } else ctx.lineTo(s.x, s.y);
+        }
+        ctx.stroke();
+      }
+      if (!sys) {
+        ctx.fillStyle = "#ef4444"; ctx.font = "12px ui-monospace, monospace";
+        ctx.fillText("⚠ invalid field expression — see sidebar", 12, h - 12);
+      }
+    }
+
     // Trails (reconstructed from history while scrubbing, so the path matches the frame).
-    if (vizRef.current.trails) {
+    if (gravityMode && vizRef.current.trails) {
       for (const b of bodies) {
         const t = scrubbing ? historyTrail(sim, b.id, ph, sim.trailLength) : sim.trails.get(b.id);
         if (!t || t.length < 2) continue;
@@ -403,7 +501,7 @@ export function Dynamics3DView() {
     // display size comes from renderRadius, never body.radius (§20/§35).
     const mode = effectiveRenderMode(vc);
     let drawnCount = 0;
-    if (vizRef.current.bodies) {
+    if (gravityMode && vizRef.current.bodies) {
       const activeCount = bodies.reduce((n, b) => n + (b.active ? 1 : 0), 0);
       const pitchAbs = Math.min(1, Math.abs(Math.sin(pitch.current)) + 0.12); // accretion-disk tilt
       const drawn = bodies
@@ -441,7 +539,7 @@ export function Dynamics3DView() {
     perf.current.drawn = drawnCount;
 
     // Status banner if failed/unstable.
-    if (sim.status === "numericalFailure" || sim.status === "unstable") {
+    if (gravityMode && (sim.status === "numericalFailure" || sim.status === "unstable")) {
       ctx.fillStyle = sim.status === "numericalFailure" ? "#ef4444" : "#fb923c";
       ctx.font = "12px ui-monospace, monospace";
       ctx.fillText(sim.status === "numericalFailure" ? "⚠ numerical failure — integration halted" : "⚠ unstable (large coordinates/speeds)", 12, h - 12);
@@ -482,7 +580,9 @@ export function Dynamics3DView() {
       setPlaceArm(null);
       return;
     }
-    // click select: nearest projected body within 14px.
+    // click select: nearest projected body within 14px (gravity mode only — there
+    // are no selectable "bodies" in the Mathematical Field model).
+    if (modelMode !== "gravity") return;
     const t = target.current;
     const mvp = multiply(perspective(Math.PI / 4, (w / h) || 1, 0.1, 5000), orbitViewAt(yaw.current, pitch.current, dist.current, t[0], t[1], t[2]));
     const mx = e.clientX - rect.left, my = e.clientY - rect.top;
@@ -555,6 +655,7 @@ export function Dynamics3DView() {
 
   const btn = "rounded px-2 py-1 text-xs";
   const chip = (on: boolean) => `${btn} ${on ? "bg-cyan-500/20 text-cyan-200" : "bg-white/5 text-slate-400 hover:bg-white/10"}`;
+  const mfInputCls = "flex-1 rounded bg-slate-800/80 px-2 py-1 font-mono text-sm text-cyan-100 outline-none focus:ring-1 focus:ring-cyan-400";
 
   return (
     <div className="flex min-h-0 flex-1">
@@ -567,6 +668,30 @@ export function Dynamics3DView() {
           </p>
         </div>
 
+        <div>
+          <h3 className="mb-1 text-[10px] uppercase tracking-wide text-slate-500">Model</h3>
+          <div className="flex gap-1">
+            <button onClick={() => setModelMode("gravity")} className={`${chip(modelMode === "gravity")} flex-1`}>Gravity (N-Body)</button>
+            <button onClick={() => setModelMode("mathfield")} className={`${chip(modelMode === "mathfield")} flex-1`}>Mathematical Field</button>
+          </div>
+        </div>
+
+        {modelMode === "mathfield" && (
+          <div>
+            <h3 className="mb-1 text-[10px] uppercase tracking-wide text-slate-500">Field (dx/dt, dy/dt, dz/dt)</h3>
+            <div className="mb-1 flex items-center gap-1"><span className="w-8 font-mono text-xs text-slate-400">ẋ =</span><input className={mfInputCls} value={mfx} spellCheck={false} onChange={(e) => setMfx(e.target.value)} /></div>
+            <div className="mb-1 flex items-center gap-1"><span className="w-8 font-mono text-xs text-slate-400">ẏ =</span><input className={mfInputCls} value={mfy} spellCheck={false} onChange={(e) => setMfy(e.target.value)} /></div>
+            <div className="flex items-center gap-1"><span className="w-8 font-mono text-xs text-slate-400">ż =</span><input className={mfInputCls} value={mfz} spellCheck={false} onChange={(e) => setMfz(e.target.value)} /></div>
+            {mfError && <p className="mt-1 text-[11px] text-red-300">{mfError}</p>}
+            <Range label="extent" value={mfExtent} min={2} max={30} step={1} onChange={setMfExtent} fmt={(v) => String(v)} />
+            <Range label="grid" value={mfRes} min={2} max={9} step={1} onChange={setMfRes} fmt={(v) => `${v}³`} />
+            <Range label="arrows" value={mfArrowScale} min={0.2} max={4} step={0.2} onChange={setMfArrowScale} fmt={(v) => v.toFixed(1)} />
+            <Range label="probes" value={mfProbeCount} min={0} max={24} step={1} onChange={setMfProbeCount} fmt={(v) => String(v)} />
+            <p className="mt-1 text-[10px] leading-tight text-slate-500">Arbitrary user-defined R³→R³ field — independent of the gravity model above; sampled on a grid, probes integrated with RK4.</p>
+          </div>
+        )}
+
+        {modelMode === "gravity" && (<>
         <div>
           <h3 className="mb-1 text-[10px] uppercase tracking-wide text-slate-500">Scenario</h3>
           <select value={scenarioId} onChange={(e) => loadScenario(e.target.value as ScenarioId)}
@@ -696,6 +821,7 @@ export function Dynamics3DView() {
             </div>
           )}
         </div>
+        </>)}
 
         <div>
           <h3 className="mb-1 text-[10px] uppercase tracking-wide text-slate-500">Camera</h3>
@@ -710,6 +836,7 @@ export function Dynamics3DView() {
           <p className="mt-1 text-[10px] leading-tight text-slate-500">Move: <b className="text-slate-400">WASD</b> + <b className="text-slate-400">Q/E</b> (up/down). Pan: <b className="text-slate-400">Shift/right-drag</b>. Orbit: drag · zoom: wheel.</p>
         </div>
 
+        {modelMode === "gravity" && (
         <div>
           <h3 className="mb-1 text-[10px] uppercase tracking-wide text-slate-500">Bodies</h3>
           <div className="space-y-0.5">
@@ -724,6 +851,7 @@ export function Dynamics3DView() {
             ))}
           </div>
         </div>
+        )}
       </aside>
 
       {/* 3D canvas */}
@@ -731,12 +859,18 @@ export function Dynamics3DView() {
         <canvas ref={canvasRef} className="h-full w-full touch-none" style={{ display: "block", cursor: "grab" }}
           onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onWheel={onWheel} onContextMenu={(e) => e.preventDefault()} />
         {/* system readout */}
+        {modelMode === "gravity" ? (
         <div className="pointer-events-none absolute left-2 top-2 rounded bg-black/50 px-2 py-1 font-mono text-[10px] text-slate-300">
           t = {rep.time.toFixed(3)} · steps {rep.steps} · dt {sim.dt.toFixed(3)} · bodies {rep.activeBodies}<br />
           E = {rep.total.toExponential(3)} · |p| = {rep.momentumMagnitude.toExponential(2)}<br />
           <span className={rep.energyDrift > 0.05 ? "text-amber-400" : "text-slate-500"}>ΔE {(rep.energyDrift * 100).toFixed(2)}%</span> ·
           {" "}<span className={rep.momentumDrift > 0.05 ? "text-amber-400" : "text-slate-500"}>Δp {(rep.momentumDrift * 100).toFixed(2)}%</span> · {rep.status}
         </div>
+        ) : (
+        <div className="pointer-events-none absolute left-2 top-2 rounded bg-black/50 px-2 py-1 font-mono text-[10px] text-slate-300">
+          Mathematical Field — dx/dt={mfx || "0"}, dy/dt={mfy || "0"}, dz/dt={mfz || "0"}
+        </div>
+        )}
         <div className="pointer-events-none absolute bottom-2 right-2 text-right text-[10px] text-slate-600">drag orbit · shift/right-drag pan · WASD/QE fly · wheel zoom · click select</div>
 
         {debug && (
@@ -747,7 +881,7 @@ export function Dynamics3DView() {
         )}
 
         {/* inspector overlay */}
-        {selected && (
+        {modelMode === "gravity" && selected && (
           <div className="absolute right-2 top-2 w-60 rounded bg-black/70 p-2 text-[11px] text-slate-300 backdrop-blur">
             <div className="mb-1 flex items-center justify-between">
               <span className="font-semibold" style={{ color: TYPE_COLOR[selected.type] }}>{selected.name}</span>
