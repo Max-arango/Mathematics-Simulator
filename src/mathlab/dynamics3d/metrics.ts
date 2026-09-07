@@ -2,9 +2,21 @@
 // drift — the honesty instruments (§17). If the model breaks a conservation law
 // (e.g. gravitationalStrength ≠ 1 makes the pairwise force non-symmetric, or the
 // integrator injects energy) the DRIFT numbers expose it instead of hiding it.
+//
+// Every diagnostic below is tagged with a Confidence (types.ts) so a consumer never
+// has to guess how trustworthy a number is:
+//   - kinetic: "exact" — a pure function of the current state (½mv²), not
+//     integration-dependent.
+//   - potential/total: "numerical" when every active body has gravitationalStrength
+//     === 1 (a genuine, symmetric potential energy); "proxy" the moment any body's
+//     strength differs (already documented below — non-physical, breaks
+//     conservation by construction, not just an integrator artefact).
+//   - momentum: "numerical" — physically conserved when strengths are uniform, but
+//     still drifts under the integrator, so it is never "exact" in practice.
 import { distance, norm } from "../linear/vector.ts";
 import { effectiveMass } from "./potential.ts";
-import type { Body3D, FieldParams, Vec3 } from "./types.ts";
+import { gravityPotential, resolveModel } from "./gravityModel.ts";
+import type { Body3D, Confidence, FieldParams, Vec3 } from "./types.ts";
 
 export interface SystemMetrics {
   kinetic: number;
@@ -14,6 +26,21 @@ export interface SystemMetrics {
   momentumMagnitude: number;
   centerOfMass: Vec3;
   totalMass: number;
+  /** Provenance tags for the diagnostics above (§17 honesty, see Confidence). */
+  kineticConfidence: Confidence;
+  /** Applies to both `potential` and `total` (total inherits the weaker tag). */
+  energyConfidence: Confidence;
+  momentumConfidence: Confidence;
+}
+
+/**
+ * "numerical" (genuine, symmetric potential energy) when every active body's
+ * gravitationalStrength === 1; "proxy" the moment any strength differs — reuses the
+ * same non-physical-strength condition documented on `potentialEnergy` below.
+ */
+export function energyConfidence(bodies: Body3D[]): Confidence {
+  const uniform = bodies.every((b) => !b.active || b.gravitationalStrength === 1);
+  return uniform ? "numerical" : "proxy";
 }
 
 /** Σ ½ m |v|² using INERTIAL mass. */
@@ -34,14 +61,15 @@ export function kineticEnergy(bodies: Body3D[]): number {
  * APPROXIMATION — surfaced so drift stays interpretable, not asserted as exact.
  */
 export function potentialEnergy(bodies: Body3D[], params: FieldParams): number {
+  const model = resolveModel(params);
   let pe = 0;
   const a = bodies.filter((b) => b.active);
   for (let i = 0; i < a.length; i++) {
     for (let j = i + 1; j < a.length; j++) {
       const eps = Math.max(a[i].softening ?? params.softening, a[j].softening ?? params.softening);
       const r = distance(a[i].position, a[j].position);
-      const d = Math.sqrt(r * r + eps * eps);
-      pe += (-params.G * effectiveMass(a[i]) * effectiveMass(a[j])) / d;
+      const { phi } = gravityPotential(r, params.G, effectiveMass(a[j]), eps, model);
+      pe += effectiveMass(a[i]) * phi;
     }
   }
   return pe;
@@ -82,6 +110,9 @@ export function systemMetrics(bodies: Body3D[], params: FieldParams): SystemMetr
     kinetic: ke, potential: pe, total: ke + pe,
     momentum: p, momentumMagnitude: norm(p),
     centerOfMass: com, totalMass,
+    kineticConfidence: "exact",
+    energyConfidence: energyConfidence(bodies),
+    momentumConfidence: "numerical",
   };
 }
 
