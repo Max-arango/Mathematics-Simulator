@@ -276,6 +276,10 @@ export function createTrajectory(
  * Advance a trajectory by `dt` of simulation time, applying the termination
  * policy. Internally this calls solveODE(method) from the shared registry; the
  * integrator's field is sign-flipped when the trajectory is "backward".
+ *
+ * `method` defaults to fixed-step "rk4" (unchanged behavior). Pass "rkf45" to
+ * use the adaptive integrator instead; `tolerance` (absTol/relTol) is only
+ * meaningful for adaptive methods and is ignored for fixed-step ones.
  */
 export function stepTrajectory(
   sys: DynamicalSystem,
@@ -283,6 +287,7 @@ export function stepTrajectory(
   dt: number,
   limits: SimulationLimits,
   method: string = "rk4",
+  tolerance?: { absTol?: number; relTol?: number },
 ): StepOutcome {
   if (state.status !== "running") return { state, termination: state.termination, advanced: false };
   if (!Number.isFinite(dt) || dt <= 0) return { state, termination: state.termination, advanced: false };
@@ -313,7 +318,12 @@ export function stepTrajectory(
   const subSteps = Math.max(1, Math.ceil(remaining / h));
   const subDt = remaining / subSteps;
 
-  const opts: ODEOptions = { h: subDt, steps: 1 };
+  // "rk4" (the default) keeps the exact fixed-step opts used before adaptive
+  // stepping existed. Any other method (e.g. "rkf45") gets its step as an
+  // initial/nominal `h` plus the caller's tolerances, if given.
+  const opts: ODEOptions = method === "rk4"
+    ? { h: subDt, steps: 1 }
+    : { h: subDt, absTol: tolerance?.absTol, relTol: tolerance?.relTol };
   let last: Vec = state.currentPosition;
   let consumedT = 0;
   let failed = false;

@@ -218,6 +218,33 @@ describe("stepTrajectory: domain enforcement", () => {
   });
 });
 
+describe("stepTrajectory: adaptive method (rkf45) + tolerance threading", () => {
+  it("tolerance is passed through to the adaptive solver (tighter tol ⇒ more solver steps for the same dt)", () => {
+    // Before this fix, absTol/relTol were never threaded through — rkf45 always
+    // ran at the ODE registry's baked-in defaults regardless of what a caller
+    // asked for. A visibly tighter tolerance must now cost visibly more steps.
+    const sys = makeSystem(["x", "y"], ["y", "-x"], {}, "continuous");
+    const limits = baseLimits({ tMax: 100 });
+
+    const trLoose = createTrajectory(sys, [1, 0], 2);
+    stepTrajectory(sys, trLoose, 2, limits, "rkf45", { absTol: 1e-2, relTol: 1e-2 });
+
+    const trTight = createTrajectory(sys, [1, 0], 2);
+    stepTrajectory(sys, trTight, 2, limits, "rkf45", { absTol: 1e-12, relTol: 1e-12 });
+
+    expect(trTight.stepsTaken).toBeGreaterThan(trLoose.stepsTaken);
+  });
+
+  it("default method (no 5th/6th arg) is unchanged: fixed-step rk4 behavior", () => {
+    const sys = makeSystem(["x", "y"], ["y", "-x"], {}, "continuous");
+    const limits = baseLimits({ tMax: 100 });
+    const tr = createTrajectory(sys, [1, 0], 0.1);
+    stepTrajectory(sys, tr, 0.1, limits);
+    // rk4 fixed-step over one integrationStep takes exactly one solver step.
+    expect(tr.stepsTaken).toBe(1);
+  });
+});
+
 describe("pause / resume", () => {
   it("pause stops stepping; resume continues", () => {
     const sys = makeSystem(["x", "y"], ["y", "-x"], {}, "continuous");
