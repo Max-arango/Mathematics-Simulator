@@ -12,7 +12,7 @@ import { useStore, type AppMode } from "./store.ts";
 
 // KaTeX-heavy views are lazy-loaded to keep the initial bundle lean.
 const DocsView = lazy(() => import("./components/docs/DocsView.tsx").then((m) => ({ default: m.DocsView })));
-const Dynamics3DView = lazy(() => import("./components/dynamics3d/Dynamics3DView.tsx").then((m) => ({ default: m.Dynamics3DView })));
+const Dynamics3DView = lazy(() => import("./components/dynamics3d/Dynamics3DTab.tsx"));
 const InspectorView = lazy(() => import("./components/inspector/InspectorView.tsx").then((m) => ({ default: m.InspectorView })));
 const NotebookView = lazy(() => import("./components/notebook/NotebookView.tsx").then((m) => ({ default: m.NotebookView })));
 
