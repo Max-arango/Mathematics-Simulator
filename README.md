@@ -17,7 +17,7 @@ symbolic calculus, and an AST→GLSL compiler). No two engines, no `eval`.
 
 ## Workspaces
 
-The top navigation switches between nine workspaces:
+The top navigation switches between ten workspaces:
 
 ### 📈 Calculator — 2D & 3D graphing (Desmos-style)
 - **2D:** plot `y = f(x)`, multiple expressions with color + visibility, pan/zoom,
@@ -71,6 +71,31 @@ The top navigation switches between nine workspaces:
   field (RK4) to its *end point* — the equilibrium / singularity it converges to.
   Play/pause + speed.
 
+### 🌌 Dynamics 3D — spatial dynamics & spacetime
+
+One **model selector**, three independent physical models rendered through the
+same orbit camera (all physics runs outside React; the shared parser + ODE
+solver are reused — no second engine, no `eval`):
+
+- **Vector field `x′ = F(x)`** — type `dx/dt, dy/dt, dz/dt` over `x, y, z` (+ named
+  parameters). Trajectories are integrated from seed points and drawn as
+  streamlines with animated flow probes. Presets: **Lorenz, Rössler, Thomas,
+  Halvorsen**, rotational flow, spiral sink, saddle. Divergence is truncated and
+  flagged, never drawn as garbage.
+- **Newtonian gravity** — softened-Plummer N-body with velocity-Verlet / RK4,
+  collisions/merging, energy & momentum diagnostics, celestial rendering, and a
+  space-time *deformation* view that is **explicitly a potential proxy, not the
+  Einstein metric**.
+- **General Relativity** — real **geodesics** of an analytic metric,
+  `d²xᵘ/dτ² + Γᵘ₍αβ₎ uᵃ uᵝ = 0`, integrated by the shared ODE solver. Metrics:
+  **Minkowski** (flat baseline) and **Schwarzschild** (`rs = 2M`). Scenarios:
+  perihelion precession, gravitational light bending, photon-sphere winding, and
+  plunge/capture (halts cleanly at the horizon). The event horizon (`rs`), photon
+  sphere (`3M`) and ISCO (`6M`) are drawn at exact radii; every model shows its
+  **provenance**. The generic differential-geometry engine derives the inverse
+  metric, Christoffel symbols and Riemann/Ricci/Einstein curvature from the metric
+  alone — nothing model-specific is hardcoded.
+
 ### 🔬 Inspector — mathematical microscope
 - Select an object (expression, matrix, vector, topological surface) and get a
   typed report: structure/AST, classification, domain, calculus (`f'`, `f''`,
@@ -94,7 +119,7 @@ The top navigation switches between nine workspaces:
 
 ## Shared math core (`src/mathlab/`)
 
-The correctness-critical layer, unit-tested (**860 tests**), all consuming one AST:
+The correctness-critical layer, unit-tested (**1021 tests**), all consuming one AST:
 
 - `core/` — `lexer` → `parser` → `ast`, real `eval` (whitelisted functions,
   **never `eval`/`Function`**), `simplify`, `print`, `complexGlsl` (AST → GLSL),
@@ -106,7 +131,11 @@ The correctness-critical layer, unit-tested (**860 tests**), all consuming one A
   (symmetric Jacobi + general QR), least squares, subspaces, conditioning.
 - `ode/` — Euler/Heun/RK2/RK4 + adaptive RKF45 with metadata.
 - `dynamics/` — systems, equilibria, Jacobian **stability** (continuous & discrete),
-  trajectories.
+  trajectories. `dynamics3d/` — N-body gravity **and** arbitrary 3D vector fields
+  `x′ = F(x)` (streamlines via the shared solver).
+- `relativity/` — generic differential geometry from a metric alone (inverse metric,
+  **Christoffel**, Riemann/Ricci/Einstein), **geodesic** integration via the shared
+  ODE solver, and analytic **Minkowski** / **Schwarzschild** models with provenance.
 - `optimization/` — golden-section, gradient descent, Newton, critical-point classify.
 - `probability/` + `statistics/` — distributions + seeded sampling + Monte Carlo;
   dataset, descriptives, regression.
