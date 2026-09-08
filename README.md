@@ -88,13 +88,16 @@ solver are reused — no second engine, no `eval`):
   Einstein metric**.
 - **General Relativity** — real **geodesics** of an analytic metric,
   `d²xᵘ/dτ² + Γᵘ₍αβ₎ uᵃ uᵝ = 0`, integrated by the shared ODE solver. Metrics:
-  **Minkowski** (flat baseline) and **Schwarzschild** (`rs = 2M`). Scenarios:
-  perihelion precession, gravitational light bending, photon-sphere winding, and
-  plunge/capture (halts cleanly at the horizon). The event horizon (`rs`), photon
-  sphere (`3M`) and ISCO (`6M`) are drawn at exact radii; every model shows its
-  **provenance**. The generic differential-geometry engine derives the inverse
-  metric, Christoffel symbols and Riemann/Ricci/Einstein curvature from the metric
-  alone — nothing model-specific is hardcoded.
+  **Minkowski** (flat baseline), **Schwarzschild** (`rs = 2M`) and **Kerr**
+  (rotating, spin `a`, non-diagonal Boyer-Lindquist metric). Scenarios: perihelion
+  precession, gravitational light bending, photon-sphere winding, plunge/capture,
+  and — for Kerr — **frame dragging** (zero-angular-momentum particles still rotate)
+  and prograde/retrograde light asymmetry. Characteristic surfaces are drawn at
+  exact radii: horizon (`rs` / `r₊`), photon sphere (`3M`), ISCO (`6M`), Kerr
+  ergosphere (`2M`); every model shows its **provenance**. The generic
+  differential-geometry engine derives the inverse metric, Christoffel symbols and
+  Riemann/Ricci/Einstein curvature from the metric alone — nothing model-specific is
+  hardcoded (so the same engine handles a non-diagonal metric).
 
 ### 🔬 Inspector — mathematical microscope
 - Select an object (expression, matrix, vector, topological surface) and get a
@@ -119,7 +122,7 @@ solver are reused — no second engine, no `eval`):
 
 ## Shared math core (`src/mathlab/`)
 
-The correctness-critical layer, unit-tested (**1021 tests**), all consuming one AST:
+The correctness-critical layer, unit-tested (**1028 tests**), all consuming one AST:
 
 - `core/` — `lexer` → `parser` → `ast`, real `eval` (whitelisted functions,
   **never `eval`/`Function`**), `simplify`, `print`, `complexGlsl` (AST → GLSL),
@@ -135,7 +138,8 @@ The correctness-critical layer, unit-tested (**1021 tests**), all consuming one 
   `x′ = F(x)` (streamlines via the shared solver).
 - `relativity/` — generic differential geometry from a metric alone (inverse metric,
   **Christoffel**, Riemann/Ricci/Einstein), **geodesic** integration via the shared
-  ODE solver, and analytic **Minkowski** / **Schwarzschild** models with provenance.
+  ODE solver, and analytic **Minkowski** / **Schwarzschild** / **Kerr** models with
+  provenance.
 - `optimization/` — golden-section, gradient descent, Newton, critical-point classify.
 - `probability/` + `statistics/` — distributions + seeded sampling + Monte Carlo;
   dataset, descriptives, regression.

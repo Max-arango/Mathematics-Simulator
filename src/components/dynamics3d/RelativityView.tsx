@@ -8,9 +8,10 @@
 // photon sphere are drawn at their exact radii (rs = 2M, 3M). Provenance is shown.
 import { useEffect, useRef, useState } from "react";
 import { perspective, multiply, orbitViewAt, orbitBasis, project } from "../graph/mat4.ts";
-import { geodesic } from "../../mathlab/relativity/geodesic.ts";
+import { geodesic, equatorialStateFromEL } from "../../mathlab/relativity/geodesic.ts";
 import { minkowski } from "../../mathlab/relativity/models/minkowski.ts";
 import { makeSchwarzschild, schwarzschildRadius, photonSphereRadius, iscoRadius, equatorialState } from "../../mathlab/relativity/models/schwarzschild.ts";
+import { makeKerr, kerrOuterHorizon } from "../../mathlab/relativity/models/kerr.ts";
 import type { Coord, MetricModel, GeodesicResult } from "../../mathlab/relativity/types.ts";
 
 type Vec3 = [number, number, number];
@@ -72,7 +73,36 @@ function schwScenarios(): Scenario[] {
   ];
 }
 
-type MetricId = "minkowski" | "schwarzschild";
+function kerrScenarios(): Scenario[] {
+  return [
+    {
+      id: "framedrag", label: "Frame dragging (zero angular momentum)",
+      description: "Particles dropped with ZERO angular momentum (L = 0). In flat space they would fall straight in; here the rotating geometry drags them around with the spin — dφ/dτ ≠ 0. This is the Lense–Thirring effect / frame dragging.",
+      build: (m) => { const base = equatorialStateFromEL(m, 9, 0.96, 0, "timelike", -1); return [0, 2.09, 4.18].map((phi, i) => ({ x0: [0, 9, Math.PI / 2, phi], u0: base.u0, tauEnd: 80, steps: 4500, label: `zaMo ${i + 1}`, kind: "timelike" as const })); },
+      camera: { yaw: 0.9, pitch: 1.35, dist: 26, target: [0, 0, 0] },
+    },
+    {
+      id: "spin-light", label: "Prograde vs retrograde light",
+      description: "Null geodesics with equal and opposite angular momentum ±L. Co-rotating (prograde) light is dragged with the spin and bends differently from counter-rotating (retrograde) light — the geometry is not symmetric under L → −L.",
+      build: (m) => [4.6, -4.6, 3.0, -3.0].map((L) => ({ ...equatorialStateFromEL(m, 35, 1, L, "null", -1), tauEnd: 110, steps: 3500, label: `L = ${L}`, kind: "null" as const })),
+      camera: { yaw: 0.9, pitch: 1.25, dist: 80, target: [0, 0, 0] },
+    },
+    {
+      id: "precession", label: "Precessing orbit",
+      description: "A bound timelike orbit. As in Schwarzschild the perihelion advances, but the spin adds an extra frame-dragging contribution to the precession.",
+      build: (m) => [{ ...equatorialStateFromEL(m, 14, 0.965, 3.6, "timelike", -1), tauEnd: 1400, steps: 14000, label: "orbit", kind: "timelike" as const }],
+      camera: { yaw: 0.6, pitch: 1.2, dist: 40, target: [0, 0, 0] },
+    },
+    {
+      id: "capture", label: "Plunge / capture",
+      description: "Low angular momentum: the trajectory spirals through the outer horizon and is captured. Integration halts cleanly where the Boyer-Lindquist chart ends (r = r₊).",
+      build: (m) => [{ ...equatorialStateFromEL(m, 9, 0.97, 1.5, "timelike", -1), tauEnd: 120, steps: 5000, label: "plunge", kind: "timelike" as const }],
+      camera: { yaw: 0.9, pitch: 1.2, dist: 28, target: [0, 0, 0] },
+    },
+  ];
+}
+
+type MetricId = "minkowski" | "schwarzschild" | "kerr";
 
 export function RelativityView() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -88,6 +118,7 @@ export function RelativityView() {
 
   const [metricId, setMetricId] = useState<MetricId>("schwarzschild");
   const [mass, setMass] = useState(0.5);
+  const [spin, setSpin] = useState(0.4); // Kerr a (kept < M for a horizon)
   const [scenarioId, setScenarioId] = useState("precession");
   const [viz, setViz] = useState({ geodesics: true, probes: true, horizon: true, spheres: true, axes: false, grid: true });
   const [playing, setPlaying] = useState(true);
@@ -97,13 +128,15 @@ export function RelativityView() {
   const speedRef = useRef(speed); speedRef.current = speed;
   const [, forceUI] = useState(0);
 
-  const scenarios = metricId === "minkowski" ? MINKOWSKI_SCENARIOS : schwScenarios();
+  const scenariosFor = (mId: MetricId) => mId === "minkowski" ? MINKOWSKI_SCENARIOS : mId === "kerr" ? kerrScenarios() : schwScenarios();
+  const modelFor = (mId: MetricId, M: number, a: number): MetricModel => mId === "minkowski" ? minkowski : mId === "kerr" ? makeKerr(M, a) : makeSchwarzschild(M);
+  const scenarios = scenariosFor(metricId);
   const scenario = scenarios.find((s) => s.id === scenarioId) ?? scenarios[0];
 
-  const recompute = (mId: MetricId, M: number, scId: string, refit: boolean) => {
-    const model = mId === "minkowski" ? minkowski : makeSchwarzschild(M);
+  const recompute = (mId: MetricId, M: number, a: number, scId: string, refit: boolean) => {
+    const model = modelFor(mId, M, a);
     modelRef.current = model;
-    const list = mId === "minkowski" ? MINKOWSKI_SCENARIOS : schwScenarios();
+    const list = scenariosFor(mId);
     const sc = list.find((s) => s.id === scId) ?? list[0];
     geosRef.current = sc.build(model).map((g) => geodesic(model, g.x0, g.u0, g.tauEnd, g.steps));
     phase.current = 0;
@@ -112,7 +145,7 @@ export function RelativityView() {
   };
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { recompute("schwarzschild", 0.5, "precession", true); }, []);
+  useEffect(() => { recompute("schwarzschild", 0.5, 0.4, "precession", true); }, []);
 
   useEffect(() => {
     let raf = 0, last = performance.now();
@@ -147,7 +180,6 @@ export function RelativityView() {
     const P = (p: Vec3) => project(mvp, p[0], p[1], p[2], w, h);
     const v = vizRef.current;
     const M = modelRef.current.params.M ?? 0;
-    const isSchw = metricId === "schwarzschild";
 
     if (v.grid) {
       const G = 24, step = 4;
@@ -161,18 +193,20 @@ export function RelativityView() {
       axis(ctx, P([0, 0, 0]), P([0, 0, L]), "#60a5fa", "z");
     }
 
-    // Event horizon + photon sphere + ISCO (Schwarzschild only, exact radii).
-    if (isSchw && M > 0) {
+    // Event horizon + characteristic surfaces at exact radii.
+    if (metricId === "schwarzschild" && M > 0) {
       const rs = schwarzschildRadius(M);
-      if (v.horizon) {
-        // filled equatorial disk + wire sphere.
-        equatorialDisk(ctx, P, rs, "rgba(8,10,20,0.92)");
-        wireSphere(ctx, P, rs, "rgba(120,140,180,0.35)");
-      }
+      if (v.horizon) { equatorialDisk(ctx, P, rs, "rgba(8,10,20,0.92)"); wireSphere(ctx, P, rs, "rgba(120,140,180,0.35)"); }
       if (v.spheres) {
         equatorialCircle(ctx, P, photonSphereRadius(M), "rgba(250,204,21,0.55)", true, "photon sphere 3M");
         equatorialCircle(ctx, P, iscoRadius(M), "rgba(148,163,184,0.35)", true, "ISCO 6M");
       }
+    } else if (metricId === "kerr" && M > 0) {
+      const a = modelRef.current.params.a ?? 0;
+      const rp = kerrOuterHorizon(M, a);
+      if (v.horizon) { equatorialDisk(ctx, P, rp, "rgba(8,10,20,0.92)"); wireSphere(ctx, P, rp, "rgba(120,140,180,0.35)"); }
+      // Ergosphere: equatorial radius 2M (static limit) — outside the horizon.
+      if (v.spheres) equatorialCircle(ctx, P, 2 * M, "rgba(244,114,182,0.5)", true, "ergosphere 2M");
     }
 
     const geos = geosRef.current;
@@ -229,22 +263,30 @@ export function RelativityView() {
 
         <label className="block">
           <span className="mb-1 block text-slate-400">Metric</span>
-          <select value={metricId} onChange={(e) => { const id = e.target.value as MetricId; setMetricId(id); const first = id === "minkowski" ? "straight" : "precession"; setScenarioId(first); recompute(id, mass, first, true); }} className="w-full rounded bg-white/5 px-2 py-1.5 outline-none ring-1 ring-white/10">
+          <select value={metricId} onChange={(e) => { const id = e.target.value as MetricId; setMetricId(id); const first = id === "minkowski" ? "straight" : id === "kerr" ? "framedrag" : "precession"; setScenarioId(first); recompute(id, mass, spin, first, true); }} className="w-full rounded bg-white/5 px-2 py-1.5 outline-none ring-1 ring-white/10">
             <option value="schwarzschild">Schwarzschild (non-rotating BH)</option>
+            <option value="kerr">Kerr (rotating BH)</option>
             <option value="minkowski">Minkowski (flat)</option>
           </select>
         </label>
 
-        {metricId === "schwarzschild" && (
+        {metricId !== "minkowski" && (
           <label className="block">
-            <span className="mb-1 flex justify-between text-slate-400"><span>Mass M</span><span className="font-mono text-slate-500">rs=2M={(2 * M).toFixed(2)}</span></span>
-            <input type="range" min={0.2} max={1.5} step={0.05} value={mass} onChange={(e) => { const m = Number(e.target.value); setMass(m); recompute("schwarzschild", m, scenarioId, false); }} className="w-full" />
+            <span className="mb-1 flex justify-between text-slate-400"><span>Mass M</span><span className="font-mono text-slate-500">2M={(2 * M).toFixed(2)}</span></span>
+            <input type="range" min={0.2} max={1.5} step={0.05} value={mass} onChange={(e) => { const m = Number(e.target.value); setMass(m); const a = Math.min(spin, m); setSpin(a); recompute(metricId, m, a, scenarioId, false); }} className="w-full" />
+          </label>
+        )}
+
+        {metricId === "kerr" && (
+          <label className="block">
+            <span className="mb-1 flex justify-between text-slate-400"><span>Spin a</span><span className="font-mono text-slate-500">r₊={kerrOuterHorizon(M, spin).toFixed(2)}</span></span>
+            <input type="range" min={0} max={mass} step={0.02} value={spin} onChange={(e) => { const a = Math.min(Number(e.target.value), mass); setSpin(a); recompute("kerr", mass, a, scenarioId, false); }} className="w-full" />
           </label>
         )}
 
         <label className="block">
           <span className="mb-1 block text-slate-400">Scenario</span>
-          <select value={scenarioId} onChange={(e) => { setScenarioId(e.target.value); recompute(metricId, mass, e.target.value, true); }} className="w-full rounded bg-white/5 px-2 py-1.5 outline-none ring-1 ring-white/10">
+          <select value={scenarioId} onChange={(e) => { setScenarioId(e.target.value); recompute(metricId, mass, spin, e.target.value, true); }} className="w-full rounded bg-white/5 px-2 py-1.5 outline-none ring-1 ring-white/10">
             {scenarios.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
           </select>
           <p className="mt-1 text-[10.5px] leading-snug text-slate-500">{scenario.description}</p>

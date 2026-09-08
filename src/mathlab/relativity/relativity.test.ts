@@ -6,8 +6,9 @@ import {
 import {
   inverseMetric, christoffelAt, riemann, ricci, ricciScalar, einstein, maxAbs,
 } from "./metric.ts";
-import { geodesic, fourVelocityNorm } from "./geodesic.ts";
-import type { Coord, MetricModel } from "./types.ts";
+import { geodesic, fourVelocityNorm, equatorialStateFromEL } from "./geodesic.ts";
+import { makeKerr, kerr, kerrOuterHorizon, ergosphereRadius } from "./models/kerr.ts";
+import { DIM, type Coord, type MetricModel } from "./types.ts";
 
 // ── Minkowski: the flat baseline ──────────────────────────────────────────────
 describe("relativity / Minkowski (flat baseline)", () => {
@@ -136,5 +137,79 @@ describe("relativity / Schwarzschild geodesics", () => {
     const gd = geodesic(sc, x0, u0, 100, 4000);
     expect(gd.termination).toBe("left-domain");
     expect(gd.x[gd.x.length - 1][1]).toBeLessThan(2); // ended near/at the horizon rs=1
+  });
+});
+
+// ── Kerr (rotating, non-diagonal) ─────────────────────────────────────────────
+describe("relativity / Kerr", () => {
+  // Numerical central difference of a model's metric along coordinate α (for verifying ∂g).
+  const numDg = (m: MetricModel, x: Coord, alpha: number, mu: number, nu: number, h = 1e-6) => {
+    const xp = x.slice(); xp[alpha] += h; const xm = x.slice(); xm[alpha] -= h;
+    return (m.g(xp)[mu][nu] - m.g(xm)[mu][nu]) / (2 * h);
+  };
+
+  it("horizon and ergosphere radii: r₊ = M+√(M²−a²), ergosphere = 2M at the equator", () => {
+    expect(kerrOuterHorizon(1, 0)).toBeCloseTo(2, 12);            // a=0 ⇒ rs
+    expect(kerrOuterHorizon(1, 0.6)).toBeCloseTo(1 + Math.sqrt(1 - 0.36), 12);
+    expect(ergosphereRadius(1, 0.6, Math.PI / 2)).toBeCloseTo(2, 12); // equatorial ergosphere = 2M
+  });
+
+  it("is non-diagonal (g_tφ ≠ 0) — the frame-dragging term", () => {
+    const g = kerr.g([0, 5, Math.PI / 2, 0]);
+    expect(Math.abs(g[0][3])).toBeGreaterThan(1e-3);
+    expect(g[0][3]).toBe(g[3][0]); // symmetric
+  });
+
+  it("analytic ∂g matches a numerical difference of g (hand-algebra guard)", () => {
+    const km = makeKerr(0.5, 0.6);
+    for (const x of [[0, 5, Math.PI / 2, 0], [0, 4, Math.PI / 3, 0], [0, 8, 1.1, 0]] as Coord[]) {
+      const D = km.dg(x);
+      for (let mu = 0; mu < DIM; mu++) for (let nu = 0; nu < DIM; nu++) {
+        expect(D[1][mu][nu]).toBeCloseTo(numDg(km, x, 1, mu, nu), 5); // ∂_r
+        expect(D[2][mu][nu]).toBeCloseTo(numDg(km, x, 2, mu, nu), 5); // ∂_θ
+      }
+    }
+  });
+
+  it("a → 0 reduces to Schwarzschild (metric and Christoffel)", () => {
+    const km = makeKerr(0.5, 1e-6);
+    for (const x of [[0, 4, Math.PI / 2, 0], [0, 6, Math.PI / 3, 0]] as Coord[]) {
+      const gk = km.g(x), gs = schwarzschild.g(x);
+      for (let a = 0; a < DIM; a++) for (let b = 0; b < DIM; b++) expect(gk[a][b]).toBeCloseTo(gs[a][b], 6);
+      expect(maxAbs(christoffelAt(km, x).map((p, i) => p.map((row, j) => row.map((v, k) => v - christoffelAt(schwarzschild, x)[i][j][k]))))).toBeLessThan(1e-4);
+    }
+  });
+
+  it("is a VACUUM solution: Ricci ≈ 0, Riemann ≠ 0 (even off the equator)", () => {
+    const km = makeKerr(0.5, 0.5);
+    const x: Coord = [0, 6, 1.2, 0];
+    expect(maxAbs(ricci(km, x))).toBeLessThan(5e-3);
+    expect(maxAbs(riemann(km, x))).toBeGreaterThan(1e-2);
+  });
+
+  it("frame dragging: a zero-angular-momentum infaller still rotates (dφ/dτ ≠ 0, prograde)", () => {
+    const km = makeKerr(0.5, 0.6);
+    const energy = (x: Coord, u: Coord) => { const g = km.g(x); return -(g[0][0] * u[0] + g[0][3] * u[3]); };
+    const angMom = (x: Coord, u: Coord) => { const g = km.g(x); return g[3][0] * u[0] + g[3][3] * u[3]; };
+    const { x0, u0 } = equatorialStateFromEL(km, 8, 0.97, 0, "timelike", -1); // L = 0 exactly
+    expect(u0[3]).toBeGreaterThan(0); // u^φ > 0 despite zero angular momentum — dragging
+    const gd = geodesic(km, x0, u0, 60, 4000);
+    const E0 = energy(gd.x[0], gd.u[0]);
+    for (let i = 0; i < gd.x.length; i += 300) {
+      expect(Math.abs(angMom(gd.x[i], gd.u[i]))).toBeLessThan(1e-2); // L stays ≈ 0 (conserved)
+      expect(Math.abs(energy(gd.x[i], gd.u[i]) - E0)).toBeLessThan(1e-2); // E conserved
+    }
+    const dPhi = gd.x[gd.x.length - 1][3] - gd.x[0][3];
+    expect(dPhi).toBeGreaterThan(0.05); // dragged forward in φ
+  });
+
+  it("equatorialStateFromEL reduces to the Schwarzschild diagonal formula when a = 0", () => {
+    const km = makeKerr(0.5, 0); // g_tφ = 0
+    const r = 10, L = 4, f = 1 - 1 / r;
+    const E = Math.sqrt(f * (1 + (L * L) / (r * r))); // turning point ⇒ u^r = 0, an allowed radius
+    const { u0 } = equatorialStateFromEL(km, r, E, L, "timelike", -1);
+    expect(u0[0]).toBeCloseTo(E / f, 9);       // u^t = E/f
+    expect(u0[3]).toBeCloseTo(L / (r * r), 9); // u^φ = L/r²
+    expect(fourVelocityNorm(km, [0, r, Math.PI / 2, 0], u0)).toBeCloseTo(-1, 6);
   });
 });

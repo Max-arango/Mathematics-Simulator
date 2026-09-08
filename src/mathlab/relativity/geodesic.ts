@@ -62,3 +62,31 @@ export function fourVelocityNorm(model: MetricModel, x: Coord, u: Coord): number
   for (let a = 0; a < DIM; a++) for (let b = 0; b < DIM; b++) s += g[a][b] * u[a] * u[b];
   return s;
 }
+
+/**
+ * Equatorial (θ = π/2) initial conditions from the conserved energy E and axial
+ * angular momentum L, for any STATIONARY, AXISYMMETRIC metric (∂t and ∂φ Killing).
+ * With the conserved quantities E = −g_{tμ}u^μ, L = g_{φμ}u^μ this inverts the 2×2
+ *
+ *   [ −g_tt  −g_tφ ] [u^t]   [E]
+ *   [  g_tφ   g_φφ ] [u^φ] = [L]
+ *
+ * (so it correctly handles Kerr's g_tφ frame-dragging term; for a diagonal metric it
+ * reduces to u^t = E/f, u^φ = L/r²). u^r is then fixed by the norm ε (−1 timelike,
+ * 0 null); a classically-forbidden radius clamps (u^r)² to 0. `radialSign` picks the
+ * inbound (−1) / outbound (+1) branch.
+ */
+export function equatorialStateFromEL(
+  model: MetricModel, r0: number, E: number, L: number, kind: "timelike" | "null", radialSign: 1 | -1,
+): { x0: Coord; u0: Coord } {
+  const x0: Coord = [0, r0, Math.PI / 2, 0];
+  const g = model.g(x0);
+  const gtt = g[0][0], gtf = g[0][3], gff = g[3][3], grr = g[1][1];
+  const det = -gtt * gff + gtf * gtf;                       // det of the 2×2 above
+  const ut = (E * gff + gtf * L) / det;
+  const uf = (-gtt * L - gtf * E) / det;
+  const eps = kind === "timelike" ? -1 : 0;
+  const ur2 = (eps - gtt * ut * ut - 2 * gtf * ut * uf - gff * uf * uf) / grr;
+  const ur = ur2 > 0 ? radialSign * Math.sqrt(ur2) : 0;
+  return { x0, u0: [ut, ur, 0, uf] };
+}
