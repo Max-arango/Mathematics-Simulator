@@ -5,13 +5,15 @@
 // semantics with celestial-body rendering"). This wrapper just switches between them.
 import { useState } from "react";
 import { VectorField3DView } from "./VectorField3DView.tsx";
+import { RelativityView } from "./RelativityView.tsx";
 import { Dynamics3DView } from "./Dynamics3DView.tsx";
 
-type Model = "vectorfield" | "gravity";
+type Model = "vectorfield" | "gravity" | "relativity";
 
 const MODELS: { id: Model; label: string; hint: string }[] = [
   { id: "vectorfield", label: "Vector field  x′ = F(x)", hint: "Define dx/dt, dy/dt, dz/dt — Lorenz, Rössler, …" },
   { id: "gravity", label: "Newtonian gravity", hint: "N-body / softened Plummer, bodies & orbits" },
+  { id: "relativity", label: "General Relativity", hint: "Geodesics of Schwarzschild / Minkowski metrics" },
 ];
 
 export default function Dynamics3DTab() {
@@ -33,7 +35,7 @@ export default function Dynamics3DTab() {
           </button>
         ))}
       </div>
-      {model === "vectorfield" ? <VectorField3DView /> : <Dynamics3DView />}
+      {model === "vectorfield" ? <VectorField3DView /> : model === "relativity" ? <RelativityView /> : <Dynamics3DView />}
     </div>
   );
 }
