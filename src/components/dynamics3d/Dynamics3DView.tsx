@@ -107,6 +107,11 @@ export function Dynamics3DView() {
   // Camera TARGET — the point the orbit revolves around. Pan/fly moves it so the
   // user travels through the space, not just spins around the origin.
   const target = useRef<Vec3>([0, 0, 0]);
+  // Desired camera — pointer/keys set these; the render loop eases the ACTUAL
+  // camera toward them each frame (OrbitControls-style damping) so motion feels
+  // smooth and predictable instead of raw/jittery.
+  const yawD = useRef(0.9), pitchD = useRef(0.5), distD = useRef(45);
+  const targetD = useRef<Vec3>([0, 0, 0]);
   const keys = useRef<Set<string>>(new Set());
 
   // Simulation in a ref — the physics never touches React state.
@@ -231,7 +236,7 @@ export function Dynamics3DView() {
         const cy = Math.cos(yaw.current), sy = Math.sin(yaw.current);
         const fwd: Vec3 = [-cy, -sy, 0];          // into the screen (horizontal)
         const right: Vec3 = [-sy, cy, 0];          // screen right (horizontal)
-        const tg = target.current;
+        const tg = targetD.current;
         const mv = (v: Vec3, s: number) => { tg[0] += v[0] * s; tg[1] += v[1] * s; tg[2] += v[2] * s; };
         if (k.has("w") || k.has("arrowup")) mv(fwd, speed);
         if (k.has("s") || k.has("arrowdown")) mv(fwd, -speed);
@@ -240,6 +245,12 @@ export function Dynamics3DView() {
         if (k.has("e") || k.has(" ")) tg[2] += speed;
         if (k.has("q")) tg[2] -= speed;
       }
+      // Ease the actual camera toward the desired camera (smooth damping).
+      const D = 0.25;
+      yaw.current += (yawD.current - yaw.current) * D;
+      pitch.current += (pitchD.current - pitch.current) * D;
+      dist.current += (distD.current - dist.current) * D;
+      for (let c = 0; c < 3; c++) target.current[c] += (targetD.current[c] - target.current[c]) * D;
       draw();
       const dtf = now - perf.current.last; perf.current.last = now;
       if (dtf > 0 && dtf < 1000) perf.current.fps = perf.current.fps ? perf.current.fps * 0.9 + (1000 / dtf) * 0.1 : 1000 / dtf;
@@ -461,11 +472,13 @@ export function Dynamics3DView() {
     if (drag.current.pan) {
       // Pan the target across the camera's screen plane → travel through the space.
       const { right, up } = orbitBasis(yaw.current, pitch.current);
-      const s = dist.current * 0.0016, tg = target.current;
+      const s = dist.current * 0.0016, tg = targetD.current;
       for (let c = 0; c < 3; c++) tg[c] += (-dx * right[c] + dy * up[c]) * s;
     } else {
-      yaw.current += dx * 0.008;
-      pitch.current = Math.max(-1.5, Math.min(1.5, pitch.current + dy * 0.008));
+      // Orbit: grab-turntable feel — drag right spins the scene right, drag down
+      // tilts the view down. Finer sensitivity + damping keep it controllable.
+      yawD.current -= dx * 0.006;
+      pitchD.current = Math.max(-1.45, Math.min(1.45, pitchD.current - dy * 0.006));
     }
     drag.current.x = e.clientX; drag.current.y = e.clientY;
   };
@@ -499,10 +512,12 @@ export function Dynamics3DView() {
     setSelectedId(best);
   };
   const onWheel = (e: React.WheelEvent) => {
-    dist.current = Math.max(3, Math.min(500, dist.current * (e.deltaY > 0 ? 1.1 : 1 / 1.1)));
+    const step = e.deltaY > 0 ? 1.08 : 1 / 1.08;
+    distD.current = Math.max(3, Math.min(500, distD.current * step));
   };
 
-  const camPreset = (y: number, p: number) => { yaw.current = y; pitch.current = p; };
+  const camPreset = (y: number, p: number) => { yawD.current = y; pitchD.current = p; };
+  const resetView = () => { yawD.current = 0.9; pitchD.current = 0.5; distD.current = 45; targetD.current = [0, 0, 0]; };
 
   // Unproject a screen pixel onto the world plane z = zPlane (for click-to-place).
   const screenToPlane = (px: number, py: number, w: number, h: number, zPlane: number): Vec3 | null => {
@@ -700,14 +715,14 @@ export function Dynamics3DView() {
         <div>
           <h3 className="mb-1 text-[10px] uppercase tracking-wide text-slate-500">Camera</h3>
           <div className="flex flex-wrap gap-1">
-            <button onClick={() => camPreset(0.9, 0.5)} className={`${btn} bg-white/5 hover:bg-white/10`}>Reset</button>
+            <button onClick={resetView} className={`${btn} bg-white/5 hover:bg-white/10`}>Reset</button>
             <button onClick={() => camPreset(0, 1.55)} className={`${btn} bg-white/5 hover:bg-white/10`}>Top</button>
             <button onClick={() => camPreset(0, 0)} className={`${btn} bg-white/5 hover:bg-white/10`}>Front</button>
             <button onClick={() => camPreset(Math.PI / 2, 0)} className={`${btn} bg-white/5 hover:bg-white/10`}>Side</button>
-            <button onClick={() => { if (selected) target.current = [...selected.position] as Vec3; }} className={`${btn} bg-white/5 hover:bg-white/10`} title="Center camera on the selected body">Focus</button>
-            <button onClick={() => { target.current = [0, 0, 0]; }} className={`${btn} bg-white/5 hover:bg-white/10`}>Recenter</button>
+            <button onClick={() => { if (selected) targetD.current = [...selected.position] as Vec3; }} className={`${btn} bg-white/5 hover:bg-white/10`} title="Center camera on the selected body">Focus</button>
+            <button onClick={() => { targetD.current = [0, 0, 0]; }} className={`${btn} bg-white/5 hover:bg-white/10`}>Recenter</button>
           </div>
-          <p className="mt-1 text-[10px] leading-tight text-slate-500">Move: <b className="text-slate-400">WASD</b> + <b className="text-slate-400">Q/E</b> (up/down). Pan: <b className="text-slate-400">Shift/right-drag</b>. Orbit: drag · zoom: wheel.</p>
+          <p className="mt-1 text-[10px] leading-tight text-slate-500"><b className="text-slate-400">Drag</b> to orbit · <b className="text-slate-400">wheel</b> to zoom · <b className="text-slate-400">Shift/right-drag</b> to pan · <b className="text-slate-400">WASD·QE</b> to fly. Motion is smoothed.</p>
         </div>
 
         <div>
