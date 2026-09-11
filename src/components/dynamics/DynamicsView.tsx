@@ -278,6 +278,12 @@ export function DynamicsView() {
   const compareDataRef = useRef(compareData); compareDataRef.current = compareData;
   const directionRef = useRef(direction); directionRef.current = direction;
   const bidirectionalRef = useRef(bidirectional); bidirectionalRef.current = bidirectional;
+  // Vector-field reference magnitude — same cache pattern as grCache/mfCache in
+  // Dynamics3DView: recomputed only when the system or grid/viewport key changes,
+  // never on a camera-only (or paused) frame.
+  const refMagCache = useRef<{ sys: DynamicalSystem | null; key: string; refMag: number }>({
+    sys: null, key: "", refMag: 1,
+  });
 
   // Reset camera / simulation. Keep these distinct so they never get conflated.
   const resetView = () => setView({ cx: 0, cy: 0, span: 12 });
@@ -393,9 +399,13 @@ export function DynamicsView() {
       // Arrow length is FIXED in pixels (visual stability) — independent of |F|.
       const len = Math.max(6, Math.min((w / cols) * 0.42, (h / rows) * 0.42));
 
-      // One pass to compute reference magnitude (robust percentile-like ref).
-      let refMag = 1;
-      {
+      // Reference magnitude (robust percentile-like ref) — cached; a full grid pass
+      // is only worth redoing when the system, grid density or viewport bounds
+      // actually change (pan/zoom/system edit), not on every animation frame.
+      const magKey = `${cols}|${rows}|${bounds.xMin}|${bounds.xMax}|${bounds.yMin}|${bounds.yMax}`;
+      const mc = refMagCache.current;
+      let refMag: number;
+      if (mc.sys !== s || mc.key !== magKey) {
         let mags: number[] = [];
         for (let i = 0; i < cols; i++) for (let j = 0; j < rows; j++) {
           const wx = bounds.xMin + (i + 0.5) * dx, wy = bounds.yMin + (j + 0.5) * dy;
@@ -406,6 +416,9 @@ export function DynamicsView() {
         mags.sort((a, b) => a - b);
         // Use the 75th percentile as ref so a handful of huge vectors don't dominate the colour.
         refMag = mags.length ? mags[Math.floor(mags.length * 0.75)] : 1;
+        refMagCache.current = { sys: s, key: magKey, refMag };
+      } else {
+        refMag = mc.refMag;
       }
 
       for (let i = 0; i < cols; i++) for (let j = 0; j < rows; j++) {
