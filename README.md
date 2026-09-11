@@ -71,6 +71,32 @@ The top navigation switches between nine workspaces:
   field (RK4) to its *end point* — the equilibrium / singularity it converges to.
   Play/pause + speed.
 
+### 🌌 Dynamics 3D — spatial dynamics & spacetime
+
+One view, one **Model** toggle, three physical models sharing the same orbit
+camera and render loop (all physics runs outside React, in refs; the shared
+parser + ODE solver are reused — no second engine, no `eval`):
+
+- **Mathematical Field `x′ = F(x)`** — type `dx/dt, dy/dt, dz/dt` over `x, y, z`,
+  parsed through the same `DynamicalSystem` used by the 2D phase-plane view.
+  Rendered as sampled vector arrows on a grid plus a handful of particle-probe
+  streamlines, integrated via the shared ODE registry.
+- **Newtonian gravity** — N-body with velocity-Verlet / RK4, collisions/merging,
+  energy & momentum diagnostics. Exact (`Φ = -GM/r`, safely floored near `r=0`)
+  and softened-Plummer models sit behind one shared force/potential seam and are
+  switchable per-scenario; diagnostics are tagged `exact`/`numerical`/`proxy`
+  (honest about what the nonphysical `gravitationalStrength` knob does to
+  conservation). The space-time *deformation* surface is explicitly a potential
+  proxy, not the Einstein metric.
+- **General Relativity** — real **geodesics** of an analytic metric,
+  `d²xᵘ/dτ² + Γᵘ₍αβ₎ uᵃ uᵝ = 0`, integrated by the shared ODE solver. Metrics:
+  **Minkowski** (flat baseline), **Schwarzschild** and **Kerr** (rotating, spin
+  `a`, non-diagonal Boyer-Lindquist metric) — one shared engine derives the
+  inverse metric, Christoffel symbols and Riemann/Ricci/Einstein curvature from
+  the metric alone, nothing model-specific hardcoded. Every metric shows its
+  **provenance**; the 3D trace is captioned as a coordinate-position plot, not a
+  literal spacetime embedding.
+
 ### 🔬 Inspector — mathematical microscope
 - Select an object (expression, matrix, vector, topological surface) and get a
   typed report: structure/AST, classification, domain, calculus (`f'`, `f''`,
@@ -94,7 +120,7 @@ The top navigation switches between nine workspaces:
 
 ## Shared math core (`src/mathlab/`)
 
-The correctness-critical layer, unit-tested (**860 tests**), all consuming one AST:
+The correctness-critical layer, unit-tested (**1028 tests**), all consuming one AST:
 
 - `core/` — `lexer` → `parser` → `ast`, real `eval` (whitelisted functions,
   **never `eval`/`Function`**), `simplify`, `print`, `complexGlsl` (AST → GLSL),
@@ -106,7 +132,12 @@ The correctness-critical layer, unit-tested (**860 tests**), all consuming one A
   (symmetric Jacobi + general QR), least squares, subspaces, conditioning.
 - `ode/` — Euler/Heun/RK2/RK4 + adaptive RKF45 with metadata.
 - `dynamics/` — systems, equilibria, Jacobian **stability** (continuous & discrete),
-  trajectories.
+  trajectories. `dynamics3d/` — N-body gravity **and** arbitrary 3D vector fields
+  `x′ = F(x)` (streamlines via the shared solver).
+- `relativity/` — generic differential geometry from a metric alone (inverse metric,
+  **Christoffel**, Riemann/Ricci/Einstein), **geodesic** integration via the shared
+  ODE solver, and analytic **Minkowski** / **Schwarzschild** / **Kerr** models with
+  provenance.
 - `optimization/` — golden-section, gradient descent, Newton, critical-point classify.
 - `probability/` + `statistics/` — distributions + seeded sampling + Monte Carlo;
   dataset, descriptives, regression.
