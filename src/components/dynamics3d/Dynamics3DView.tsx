@@ -16,7 +16,7 @@ import {
 import { makeScenario, SCENARIO_IDS, type ScenarioId } from "../../mathlab/dynamics3d/scenarios.ts";
 import { fieldAt, accelerationSources } from "../../mathlab/dynamics3d/field.ts";
 import { potentialAt, effectiveMass } from "../../mathlab/dynamics3d/potential.ts";
-import { sampleFieldGridZ, potentialSurfaceZ, traceFieldLine, type SurfaceVertex } from "../../mathlab/dynamics3d/fieldViz.ts";
+import { sampleFieldGridZ, potentialSurfaceZ, traceFieldLine, type SurfaceVertex, type FieldSample } from "../../mathlab/dynamics3d/fieldViz.ts";
 import { sampleMathFieldGrid3D, traceMathTrajectory3D, type MathFieldGridSample } from "../../mathlab/dynamics3d/mathField.ts";
 import { makeSystem, type DynamicalSystem } from "../../mathlab/dynamics/system.ts";
 import type { Body3D, BodyType, Vec3 } from "../../mathlab/dynamics3d/types.ts";
@@ -119,6 +119,15 @@ function computeGRTrace(model: MetricModel, ctl: GRControls): Omit<GRTrace, "key
     return [r * Math.sin(theta) * Math.cos(phi), r * Math.sin(theta) * Math.sin(phi), r * Math.cos(theta)];
   });
   return { points, termination: result.termination, error: null };
+}
+
+/** Content-hash signature of the active bodies (position/mass/strength/softening) —
+ * the same cache-key ingredient surfCache uses, shared here so the gravity-field
+ * grid and field-line caches invalidate exactly when the deformation sheet does. */
+function bodySig(bodies: Body3D[], scrubbing: boolean, ph: number): number {
+  let sig = scrubbing ? ph : 0;
+  for (const b of bodies) if (b.active) sig += b.position[0] + 2.1 * b.position[1] + 3.7 * b.mass + 5.3 * b.gravitationalStrength + (b.softening ?? 0);
+  return sig;
 }
 
 /** Project through mvp, returning screen px + clip-w depth (null if behind camera). */
@@ -277,6 +286,11 @@ export function Dynamics3DView() {
   // Cache the deformation sheet — recompute only when bodies/controls change, so a
   // high-resolution grid stays smooth while orbiting a paused scene.
   const surfCache = useRef<{ key: string; surf: SurfaceVertex[][]; minZ: number } | null>(null);
+  // Same idea for the gravity-field grid + field-line sampling below (§8/§20) —
+  // both are pure functions of bodies/params/extent, so they're recomputed only
+  // when bodySig()/extent/resolution change, never on a camera-only frame.
+  const gridCache = useRef<{ key: string; samples: FieldSample[] } | null>(null);
+  const lineCache = useRef<{ key: string; lines: Vec3[][] } | null>(null);
 
   // Assign default planet variants (cycled) so a fresh scene's planets look distinct.
   const assignDefaultVariants = (s: Simulation) => {
@@ -480,8 +494,17 @@ export function Dynamics3DView() {
     }
 
     // Gravity field vectors (§8) — direction of acceleration at each grid point.
+    // Cached like the deformation sheet above: resampled only when the bodies,
+    // extent or density actually change, not on every camera-only frame.
     if (gravityMode && vizRef.current.gravityField) {
-      const samples = sampleFieldGridZ(bodies, sim.params, EXT, perfMode ? Math.min(fieldCtl.current.density, 7) : fieldCtl.current.density, 0);
+      const density = perfMode ? Math.min(fieldCtl.current.density, 7) : fieldCtl.current.density;
+      const gridKey = `${density}|${EXT}|${bodySig(bodies, scrubbing, ph)}`;
+      let gcache = gridCache.current;
+      if (!gcache || gcache.key !== gridKey) {
+        gcache = { key: gridKey, samples: sampleFieldGridZ(bodies, sim.params, EXT, density, 0) };
+        gridCache.current = gcache;
+      }
+      const samples = gcache.samples;
       let ref = 1e-6;
       for (const s of samples) if (s.mag > ref && Number.isFinite(s.mag)) ref = Math.max(ref, s.mag);
       for (const s of samples) {
@@ -499,12 +522,23 @@ export function Dynamics3DView() {
     }
 
     // Field lines (§20) — integral curves of g, seeded on a ring, traced inward.
+    // Same caching: 20 seeds × 80 integration steps is only worth redoing when
+    // the bodies or extent change, not every frame.
     if (gravityMode && vizRef.current.fieldLines) {
       const seeds = 20, R = EXT * 0.75;
+      const lineKey = `${seeds}|${R}|${bodySig(bodies, scrubbing, ph)}`;
+      let lcache = lineCache.current;
+      if (!lcache || lcache.key !== lineKey) {
+        const lines: Vec3[][] = [];
+        for (let k = 0; k < seeds; k++) {
+          const th = (2 * Math.PI * k) / seeds;
+          lines.push(traceFieldLine([Math.cos(th) * R, Math.sin(th) * R, 0], bodies, sim.params, { steps: 80, ds: 0.5, bound: EXT * 2 }));
+        }
+        lcache = { key: lineKey, lines };
+        lineCache.current = lcache;
+      }
       ctx.strokeStyle = "rgba(52,211,153,0.5)"; ctx.lineWidth = 1;
-      for (let k = 0; k < seeds; k++) {
-        const th = (2 * Math.PI * k) / seeds;
-        const line = traceFieldLine([Math.cos(th) * R, Math.sin(th) * R, 0], bodies, sim.params, { steps: 80, ds: 0.5, bound: EXT * 2 });
+      for (const line of lcache.lines) {
         ctx.beginPath();
         let started = false;
         for (const p of line) {
