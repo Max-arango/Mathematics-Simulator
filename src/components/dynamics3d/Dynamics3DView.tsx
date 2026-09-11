@@ -126,7 +126,7 @@ function computeGRTrace(model: MetricModel, ctl: GRControls): Omit<GRTrace, "key
  * grid and field-line caches invalidate exactly when the deformation sheet does. */
 function bodySig(bodies: Body3D[], scrubbing: boolean, ph: number): number {
   let sig = scrubbing ? ph : 0;
-  for (const b of bodies) if (b.active) sig += b.position[0] + 2.1 * b.position[1] + 3.7 * b.mass + 5.3 * b.gravitationalStrength + (b.softening ?? 0);
+  for (const b of bodies) if (b.active) sig += b.position[0] + 2.1 * b.position[1] + 4.9 * b.position[2] + 3.7 * b.mass + 5.3 * b.gravitationalStrength + (b.softening ?? 0);
   return sig;
 }
 
@@ -467,10 +467,9 @@ export function Dynamics3DView() {
     if (gravityMode && vizRef.current.deformation) {
       const n = perfMode ? Math.min(fieldCtl.current.deformRes, 16) : fieldCtl.current.deformRes;
       // Bodies signature: recompute the sheet only when a source actually changes
-      // (moved / mass / strength edited), not on every camera-only frame.
-      let sig = scrubbing ? ph : 0;
-      for (const b of bodies) if (b.active) sig += b.position[0] + 2.1 * b.position[1] + 3.7 * b.mass + 5.3 * b.gravitationalStrength + (b.softening ?? 0);
-      const key = `${n}|${EXT}|${fieldCtl.current.deformScale}|${sig}`;
+      // (moved / mass / strength edited) or the gravity model/params change, not on
+      // every camera-only frame.
+      const key = `${n}|${EXT}|${fieldCtl.current.deformScale}|${bodySig(bodies, scrubbing, ph)}|${sim.params.model}|${sim.params.G}|${sim.params.softening}`;
       let cache = surfCache.current;
       if (!cache || cache.key !== key) {
         const surf = potentialSurfaceZ(bodies, sim.params, EXT, n, fieldCtl.current.deformScale, EXT);
@@ -498,7 +497,7 @@ export function Dynamics3DView() {
     // extent or density actually change, not on every camera-only frame.
     if (gravityMode && vizRef.current.gravityField) {
       const density = perfMode ? Math.min(fieldCtl.current.density, 7) : fieldCtl.current.density;
-      const gridKey = `${density}|${EXT}|${bodySig(bodies, scrubbing, ph)}`;
+      const gridKey = `${density}|${EXT}|${bodySig(bodies, scrubbing, ph)}|${sim.params.model}|${sim.params.G}|${sim.params.softening}`;
       let gcache = gridCache.current;
       if (!gcache || gcache.key !== gridKey) {
         gcache = { key: gridKey, samples: sampleFieldGridZ(bodies, sim.params, EXT, density, 0) };
@@ -526,7 +525,7 @@ export function Dynamics3DView() {
     // the bodies or extent change, not every frame.
     if (gravityMode && vizRef.current.fieldLines) {
       const seeds = 20, R = EXT * 0.75;
-      const lineKey = `${seeds}|${R}|${bodySig(bodies, scrubbing, ph)}`;
+      const lineKey = `${seeds}|${R}|${bodySig(bodies, scrubbing, ph)}|${sim.params.model}|${sim.params.G}|${sim.params.softening}`;
       let lcache = lineCache.current;
       if (!lcache || lcache.key !== lineKey) {
         const lines: Vec3[][] = [];
