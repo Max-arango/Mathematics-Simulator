@@ -28,6 +28,18 @@ import {
   type BodyRenderMode, type CelestialQuality, type BodyVisualConfig,
   type PlanetVariant, type PlanetPalette,
 } from "../../mathlab/dynamics3d/rendering.ts";
+// General Relativity mode (Phase 9) — consumes the already-QA'd relativity
+// pipeline as-is: metric model -> normalize a spatial velocity into a timelike
+// 4-velocity -> integrate the geodesic. This is a coordinate-position PLOT of
+// an exact/approximate geodesic, not a spacetime-curvature renderer (§2/§37,
+// same honesty rule as the effective gravity-field visuals above).
+import type { MetricModel } from "../../mathlab/relativity/metric.ts";
+import { minkowski } from "../../mathlab/relativity/models/minkowski.ts";
+import { makeSchwarzschild } from "../../mathlab/relativity/models/schwarzschild.ts";
+import { makeKerr } from "../../mathlab/relativity/models/kerr.ts";
+import { normalizeTimelikeVelocity } from "../../mathlab/relativity/normalize.ts";
+import { integrateGeodesic, type GeodesicTermination } from "../../mathlab/relativity/geodesic.ts";
+import { hasValue } from "../../mathlab/core/result.ts";
 
 const TYPE_COLOR: Record<BodyType, string> = {
   particle: "#94a3b8", planet: "#38bdf8", star: "#fbbf24",
@@ -52,6 +64,63 @@ const VIZ_LABELS: Record<string, string> = {
 const SUBSTEPS_PER_UNIT = 2; // physics substeps advanced per (speed=1) frame
 let addCounter = 0;
 
+export type GRMetricId = "minkowski" | "schwarzschild" | "kerr";
+
+interface GRControls {
+  metricId: GRMetricId; M: number; a: number;
+  r0: number; vFrac: number;
+  x0: number; y0: number; z0: number; vx: number; vy: number; vz: number;
+  tau1: number; h: number;
+}
+
+interface GRTrace {
+  key: string;
+  points: Vec3[];
+  termination: GeodesicTermination | "domainError";
+  error: string | null;
+}
+
+function makeGRModel(id: GRMetricId, M: number, a: number): MetricModel {
+  if (id === "minkowski") return minkowski;
+  if (id === "schwarzschild") return makeSchwarzschild(M);
+  return makeKerr(M, a);
+}
+
+/**
+ * Build (x0, spatial u) from the simple UI controls, solve the missing u^t via
+ * the timelike-normalization helper, integrate the geodesic, then convert the
+ * spatial coordinates to Cartesian for the existing camera pipeline (VISUAL
+ * ONLY — spherical->Cartesian is a coordinate-position plot, not curvature).
+ */
+function computeGRTrace(model: MetricModel, ctl: GRControls): Omit<GRTrace, "key"> {
+  let x0: number[];
+  let uSpatial: number[];
+  if (ctl.metricId === "minkowski") {
+    x0 = [0, ctl.x0, ctl.y0, ctl.z0];
+    uSpatial = [ctl.vx, ctl.vy, ctl.vz];
+  } else {
+    x0 = [0, ctl.r0, Math.PI / 2, 0]; // equatorial start
+    // ponytail: dphi/dtau approximated by the standard circular-orbit dphi/dt
+    // rate (a=0 reduces to Schwarzschild's sqrt(M/r^3)), scaled by vFrac —
+    // a simple, physically-flavored slider, not a rigorous ZAMO/ISCO solve.
+    const aTerm = ctl.metricId === "kerr" ? ctl.a : 0;
+    const omega = Math.sqrt(ctl.M) / (Math.pow(ctl.r0, 1.5) + aTerm * Math.sqrt(ctl.M));
+    uSpatial = [0, 0, ctl.vFrac * omega]; // u^r=0, u^theta=0, u^phi=vFrac*omega
+  }
+  const normRes = normalizeTimelikeVelocity(model, x0, uSpatial);
+  if (!hasValue(normRes)) {
+    const reason = "reason" in normRes ? normRes.reason : undefined;
+    return { points: [], termination: "domainError", error: reason ?? "no valid timelike velocity" };
+  }
+  const result = integrateGeodesic(model, x0, normRes.value, { tau1: ctl.tau1, h: ctl.h });
+  const points: Vec3[] = result.states.map((s): Vec3 => {
+    if (ctl.metricId === "minkowski") return [s.x[1], s.x[2], s.x[3]];
+    const [, r, theta, phi] = s.x;
+    return [r * Math.sin(theta) * Math.cos(phi), r * Math.sin(theta) * Math.sin(phi), r * Math.cos(theta)];
+  });
+  return { points, termination: result.termination, error: null };
+}
+
 /** Project through mvp, returning screen px + clip-w depth (null if behind camera). */
 function projectP(mvp: Mat4, x: number, y: number, z: number, w: number, h: number) {
   const cw = mvp[3] * x + mvp[7] * y + mvp[11] * z + mvp[15];
@@ -66,8 +135,10 @@ export function Dynamics3DView() {
 
   // Model: "gravity" is the existing N-body engine (default, unchanged below);
   // "mathfield" is an independent arbitrary 3D vector field (Phase 2, ADR-003) —
-  // it does not touch the gravity Simulation at all.
-  const [modelMode, setModelMode] = useState<"gravity" | "mathfield">("gravity");
+  // it does not touch the gravity Simulation at all; "gr" (Phase 9) integrates
+  // a real geodesic through an exact metric model (relativity/), also fully
+  // independent of the gravity Simulation and the mathfield system.
+  const [modelMode, setModelMode] = useState<"gravity" | "mathfield" | "gr">("gravity");
 
   // System / controls (React state → drives sim settings + sidebar).
   const [scenarioId, setScenarioId] = useState<ScenarioId>("planetary");
@@ -128,6 +199,24 @@ export function Dynamics3DView() {
     catch (e) { setMfError(e instanceof Error ? e.message : String(e)); return null; }
   }, [mfx, mfy, mfz]);
 
+  // ── General Relativity model (Phase 9) — a single test-particle geodesic
+  // through an exact metric, independent of the gravity Simulation. ──
+  const [grMetricId, setGrMetricId] = useState<GRMetricId>("schwarzschild");
+  const [grM, setGrM] = useState(1);
+  const [grA, setGrA] = useState(0.5);
+  const [grR0, setGrR0] = useState(10);       // equatorial start radius (Schwarzschild/Kerr)
+  const [grVFrac, setGrVFrac] = useState(1);  // fraction of the circular-orbit angular rate
+  const [grX0x, setGrX0x] = useState(8);      // Minkowski: initial Cartesian position
+  const [grX0y, setGrX0y] = useState(0);
+  const [grX0z, setGrX0z] = useState(0);
+  const [grV0x, setGrV0x] = useState(0);      // Minkowski: initial velocity (units c=1)
+  const [grV0y, setGrV0y] = useState(0.5);
+  const [grV0z, setGrV0z] = useState(0);
+  const [grTau1, setGrTau1] = useState(50);   // affine-parameter integration range
+  const [grH, setGrH] = useState(0.05);       // affine-parameter step size
+
+  const grModel = useMemo(() => makeGRModel(grMetricId, grM, grA), [grMetricId, grM, grA]);
+
   // Camera (refs — smooth pointer updates without re-render).
   const yaw = useRef(0.9), pitch = useRef(0.5), dist = useRef(45);
   // Camera TARGET — the point the orbit revolves around. Pan/fly moves it so the
@@ -161,6 +250,18 @@ export function Dynamics3DView() {
   const mfCache = useRef<{ sys: DynamicalSystem | null; key: string; grid: MathFieldGridSample | null; probes: Vec3[][] }>({
     sys: null, key: "", grid: null, probes: [],
   });
+  // GR controls mirrored into a ref for the rAF loop, same pattern as fieldCtl/mfCtl —
+  // and a cache recomputed only when the key changes, never per animation frame.
+  const grModelRef = useRef<MetricModel>(grModel); grModelRef.current = grModel;
+  const grCtl = useRef<GRControls>({
+    metricId: grMetricId, M: grM, a: grA, r0: grR0, vFrac: grVFrac,
+    x0: grX0x, y0: grX0y, z0: grX0z, vx: grV0x, vy: grV0y, vz: grV0z, tau1: grTau1, h: grH,
+  });
+  grCtl.current = {
+    metricId: grMetricId, M: grM, a: grA, r0: grR0, vFrac: grVFrac,
+    x0: grX0x, y0: grX0y, z0: grX0z, vx: grV0x, vy: grV0y, vz: grV0z, tau1: grTau1, h: grH,
+  };
+  const grCache = useRef<GRTrace>({ key: "", points: [], termination: "completed", error: null });
   const visualRef = useRef<BodyVisualConfig & { labels: boolean }>({
     renderMode: renderModeUI, quality, scale: bodyScale,
     showAtmosphere: effects.atmosphere, showGlow: effects.glow, showAccretionDisk: effects.accretionDisk,
@@ -345,6 +446,8 @@ export function Dynamics3DView() {
       }
     }
     const gravityMode = modelModeRef.current === "gravity";
+    const mathFieldMode = modelModeRef.current === "mathfield";
+    const grMode = modelModeRef.current === "gr";
 
     // Space-time DEFORMATION PROXY (§7) — rubber sheet of the effective potential.
     if (gravityMode && vizRef.current.deformation) {
@@ -425,7 +528,7 @@ export function Dynamics3DView() {
     // of a user-defined F: R³→R³. Independent of the gravity Simulation. Grid/probes
     // are cached in mfCache, recomputed only when the field or sampling controls
     // change — never re-sampled on a camera-only frame.
-    if (!gravityMode) {
+    if (mathFieldMode) {
       const sys = mathSysRef.current;
       const ctl = mfCtl.current;
       const gc = mfCache.current;
@@ -481,6 +584,42 @@ export function Dynamics3DView() {
       if (!sys) {
         ctx.fillStyle = "#ef4444"; ctx.font = "12px ui-monospace, monospace";
         ctx.fillText("⚠ invalid field expression — see sidebar", 12, h - 12);
+      }
+    }
+
+    // General Relativity mode (Phase 9) — a single test-particle geodesic through
+    // an exact metric (relativity/). Recomputed only when the model or controls
+    // change (keyed on grCache.key), never per animation frame, mirroring the
+    // Mathematical Field probe cache above. Reuses that same trail-drawing loop.
+    if (grMode) {
+      const model = grModelRef.current;
+      const ctl = grCtl.current;
+      const key = `${ctl.metricId}|${ctl.M}|${ctl.a}|${ctl.r0}|${ctl.vFrac}|${ctl.x0}|${ctl.y0}|${ctl.z0}|${ctl.vx}|${ctl.vy}|${ctl.vz}|${ctl.tau1}|${ctl.h}`;
+      if (grCache.current.key !== key) {
+        grCache.current = { key, ...computeGRTrace(model, ctl) };
+      }
+      const trace = grCache.current;
+      ctx.strokeStyle = "rgba(250,204,21,0.75)"; ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      let started = false;
+      for (const p of trace.points) {
+        const s = P(p);
+        if (!s) { started = false; continue; }
+        if (!started) { ctx.moveTo(s.x, s.y); started = true; } else ctx.lineTo(s.x, s.y);
+      }
+      ctx.stroke();
+      if (trace.points.length) {
+        const start = P(trace.points[0]);
+        if (start) { ctx.fillStyle = "#facc15"; ctx.beginPath(); ctx.arc(start.x, start.y, 3, 0, Math.PI * 2); ctx.fill(); }
+        const end = P(trace.points[trace.points.length - 1]);
+        if (end) { ctx.strokeStyle = "#facc15"; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(end.x, end.y, 5, 0, Math.PI * 2); ctx.stroke(); }
+      }
+      if (trace.error) {
+        ctx.fillStyle = "#ef4444"; ctx.font = "12px ui-monospace, monospace";
+        ctx.fillText(`⚠ no valid timelike velocity — ${trace.error}`, 12, h - 12);
+      } else if (trace.termination !== "completed") {
+        ctx.fillStyle = "#fb923c"; ctx.font = "12px ui-monospace, monospace";
+        ctx.fillText(`⚠ geodesic terminated: ${trace.termination}`, 12, h - 12);
       }
     }
 
@@ -679,9 +818,10 @@ export function Dynamics3DView() {
 
         <div>
           <h3 className="mb-1 text-[10px] uppercase tracking-wide text-slate-500">Model</h3>
-          <div className="flex gap-1">
+          <div className="flex flex-wrap gap-1">
             <button onClick={() => setModelMode("gravity")} className={`${chip(modelMode === "gravity")} flex-1`}>Gravity (N-Body)</button>
             <button onClick={() => setModelMode("mathfield")} className={`${chip(modelMode === "mathfield")} flex-1`}>Mathematical Field</button>
+            <button onClick={() => setModelMode("gr")} className={`${chip(modelMode === "gr")} flex-1`}>General Relativity</button>
           </div>
         </div>
 
@@ -697,6 +837,50 @@ export function Dynamics3DView() {
             <Range label="arrows" value={mfArrowScale} min={0.2} max={4} step={0.2} onChange={setMfArrowScale} fmt={(v) => v.toFixed(1)} />
             <Range label="probes" value={mfProbeCount} min={0} max={24} step={1} onChange={setMfProbeCount} fmt={(v) => String(v)} />
             <p className="mt-1 text-[10px] leading-tight text-slate-500">Arbitrary user-defined R³→R³ field — independent of the gravity model above; sampled on a grid, probes integrated with RK4.</p>
+          </div>
+        )}
+
+        {modelMode === "gr" && (
+          <div>
+            <h3 className="mb-1 text-[10px] uppercase tracking-wide text-slate-500">Metric</h3>
+            <select value={grMetricId} onChange={(e) => setGrMetricId(e.target.value as GRMetricId)}
+              className="w-full rounded bg-slate-800/80 px-2 py-1 text-xs text-cyan-100 outline-none">
+              <option value="minkowski">Minkowski</option>
+              <option value="schwarzschild">Schwarzschild</option>
+              <option value="kerr">Kerr</option>
+            </select>
+            <p className="mt-1 text-[10px] leading-tight text-slate-500">{grModel.provenance}.</p>
+
+            {grMetricId !== "minkowski" && <Range label="M" value={grM} min={0.1} max={5} step={0.1} onChange={setGrM} fmt={(v) => v.toFixed(1)} />}
+            {grMetricId === "kerr" && <Range label="a" value={grA} min={-grM} max={grM} step={0.05} onChange={setGrA} fmt={(v) => v.toFixed(2)} />}
+
+            {grMetricId === "minkowski" ? (
+              <>
+                <p className="mb-0.5 mt-2 text-[10px] uppercase tracking-wide text-slate-500">Initial position</p>
+                <Range label="x0" value={grX0x} min={-15} max={15} step={0.5} onChange={setGrX0x} fmt={(v) => v.toFixed(1)} />
+                <Range label="y0" value={grX0y} min={-15} max={15} step={0.5} onChange={setGrX0y} fmt={(v) => v.toFixed(1)} />
+                <Range label="z0" value={grX0z} min={-15} max={15} step={0.5} onChange={setGrX0z} fmt={(v) => v.toFixed(1)} />
+                <p className="mb-0.5 mt-2 text-[10px] uppercase tracking-wide text-slate-500">Initial velocity (units c=1)</p>
+                <Range label="vx" value={grV0x} min={-0.95} max={0.95} step={0.05} onChange={setGrV0x} fmt={(v) => v.toFixed(2)} />
+                <Range label="vy" value={grV0y} min={-0.95} max={0.95} step={0.05} onChange={setGrV0y} fmt={(v) => v.toFixed(2)} />
+                <Range label="vz" value={grV0z} min={-0.95} max={0.95} step={0.05} onChange={setGrV0z} fmt={(v) => v.toFixed(2)} />
+                <p className="mt-1 text-[10px] leading-tight text-slate-500">Flat spacetime — straight-line motion at constant velocity.</p>
+              </>
+            ) : (
+              <>
+                <p className="mb-0.5 mt-2 text-[10px] uppercase tracking-wide text-slate-500">Test-particle orbit (equatorial)</p>
+                <Range label="r0" value={grR0} min={1} max={40} step={0.5} onChange={setGrR0} fmt={(v) => v.toFixed(1)} />
+                <Range label="v frac" value={grVFrac} min={-2} max={2} step={0.05} onChange={setGrVFrac} fmt={(v) => v.toFixed(2)} />
+                <p className="mt-1 text-[10px] leading-tight text-slate-500">
+                  "v frac" scales a circular-orbit angular-velocity estimate (≈1 = prograde circular); u<sup>r</sup>=0, θ=π/2 fixed. u<sup>t</sup> is solved from the timelike norm condition. r0 inside the horizon shows as a terminated geodesic below.
+                </p>
+              </>
+            )}
+
+            <h3 className="mb-1 mt-2 text-[10px] uppercase tracking-wide text-slate-500">Integration (affine parameter τ)</h3>
+            <Range label="tau1" value={grTau1} min={1} max={300} step={1} onChange={setGrTau1} fmt={(v) => String(v)} />
+            <Range label="h" value={grH} min={0.001} max={0.2} step={0.001} onChange={setGrH} fmt={(v) => v.toFixed(3)} />
+            <p className="mt-1 text-[10px] leading-tight text-slate-500">Coordinate-position plot of the integrated geodesic (spherical→Cartesian for Schwarzschild/Kerr) — not a literal spacetime embedding.</p>
           </div>
         )}
 
@@ -888,9 +1072,18 @@ export function Dynamics3DView() {
           <span className={rep.energyDrift > 0.05 ? "text-amber-400" : "text-slate-500"}>ΔE {(rep.energyDrift * 100).toFixed(2)}%</span> ·
           {" "}<span className={rep.momentumDrift > 0.05 ? "text-amber-400" : "text-slate-500"}>Δp {(rep.momentumDrift * 100).toFixed(2)}%</span> · {rep.status}
         </div>
-        ) : (
+        ) : modelMode === "mathfield" ? (
         <div className="pointer-events-none absolute left-2 top-2 rounded bg-black/50 px-2 py-1 font-mono text-[10px] text-slate-300">
           Mathematical Field — dx/dt={mfx || "0"}, dy/dt={mfy || "0"}, dz/dt={mfz || "0"}
+        </div>
+        ) : (
+        <div className="pointer-events-none absolute left-2 top-2 rounded bg-black/50 px-2 py-1 font-mono text-[10px] text-slate-300">
+          General Relativity — {grModel.name} ({grModel.chart})<br />
+          {grMetricId !== "minkowski" && <>M={grM.toFixed(2)}{grMetricId === "kerr" ? `, a=${grA.toFixed(2)}` : ""} · </>}
+          τ₁={grTau1} · h={grH.toFixed(3)} · points {grCache.current.points.length}<br />
+          <span className={grCache.current.error ? "text-red-400" : grCache.current.termination !== "completed" ? "text-amber-400" : "text-slate-500"}>
+            {grCache.current.error ? `domainError: ${grCache.current.error}` : `termination: ${grCache.current.termination}`}
+          </span>
         </div>
         )}
         <div className="pointer-events-none absolute bottom-2 right-2 text-right text-[10px] text-slate-600">drag orbit · shift/right-drag pan · WASD/QE fly · wheel zoom · click select</div>
