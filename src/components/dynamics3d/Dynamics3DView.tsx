@@ -80,6 +80,12 @@ interface GRTrace {
   error: string | null;
 }
 
+// User-spawned probe markers (click-to-place, §12) for Mathematical Field mode
+// — a lighter-weight sibling of gravity's Body3D spawning: no mass/physics
+// presets, just a seed position + appearance variant. Trajectories are cached
+// separately (per-marker), never stored inline here.
+interface MFMarker { id: string; seed: Vec3; variant: PlanetVariant; }
+
 function makeGRModel(id: GRMetricId, M: number, a: number): MetricModel {
   if (id === "minkowski") return minkowski;
   if (id === "schwarzschild") return makeSchwarzschild(M);
@@ -264,6 +270,11 @@ export function Dynamics3DView() {
   const mfCache = useRef<{ sys: DynamicalSystem | null; key: string; grid: MathFieldGridSample | null; probes: Vec3[][] }>({
     sys: null, key: "", grid: null, probes: [],
   });
+  // User-spawned probe markers (additive to the auto-seeded circle probes above).
+  // Trajectories are cached per-marker (keyed on the sys reference + seed), never
+  // recomputed on a camera-only frame.
+  const mfMarkersRef = useRef<MFMarker[]>([]);
+  const mfMarkerCacheRef = useRef<Map<string, { sys: DynamicalSystem | null; points: Vec3[] }>>(new Map());
   // GR controls mirrored into a ref for the rAF loop, same pattern as fieldCtl/mfCtl —
   // and a cache recomputed only when the key changes, never per animation frame.
   const grModelRef = useRef<MetricModel>(grModel); grModelRef.current = grModel;
@@ -337,6 +348,18 @@ export function Dynamics3DView() {
     if (p.type === "planet") variants.current.set(body.id, variant);
     setSelectedId(body.id);
     forceUI((n2) => n2 + 1);
+  };
+
+  // Spawn a Mathematical Field probe marker at a clicked seed point (§12 sibling —
+  // no mass/type presets, just a variant for the planet sprite riding the flow).
+  const addMathMarker = (seed: Vec3, variant: PlanetVariant) => {
+    mfMarkersRef.current = [...mfMarkersRef.current, { id: `mfm-${++addCounter}`, seed, variant }];
+    forceUI((n) => n + 1);
+  };
+  const clearMathMarkers = () => {
+    mfMarkersRef.current = [];
+    mfMarkerCacheRef.current.clear();
+    forceUI((n) => n + 1);
   };
 
   // Keep sim settings synced when the user changes them.
@@ -625,6 +648,50 @@ export function Dynamics3DView() {
         }
         ctx.stroke();
       }
+
+      // User-spawned probe markers (§12 sibling, additive to the auto probes
+      // above). Each marker's trajectory is cached per-marker (keyed on the sys
+      // reference) and drawn as a polyline + a planet sprite at its current tip.
+      const mmCache = mfMarkerCacheRef.current;
+      for (const m of mfMarkersRef.current) {
+        const cached = mmCache.get(m.id);
+        if (sys && (!cached || cached.sys !== sys)) {
+          const b = ctl.extent;
+          const { points } = traceMathTrajectory3D(sys, m.seed, {
+            dt: Math.max(0.005, b * 0.004), maxSteps: 400,
+            bounds: { min: [-b * 3, -b * 3, -b * 3], max: [b * 3, b * 3, b * 3] },
+          });
+          mmCache.set(m.id, { sys, points });
+        }
+      }
+      if (sys) {
+        const pitchAbs = Math.min(1, Math.abs(Math.sin(pitch.current)) + 0.12);
+        ctx.strokeStyle = "rgba(56,189,248,0.75)"; ctx.lineWidth = 1.3;
+        for (const m of mfMarkersRef.current) {
+          const cached = mmCache.get(m.id);
+          if (!cached || cached.points.length < 2) continue;
+          ctx.beginPath();
+          let started = false;
+          for (const p of cached.points) {
+            const s = P(p);
+            if (!s) { started = false; continue; }
+            if (!started) { ctx.moveTo(s.x, s.y); started = true; } else ctx.lineTo(s.x, s.y);
+          }
+          ctx.stroke();
+          const tip = cached.points[cached.points.length - 1];
+          const s = P(tip);
+          if (!s) continue;
+          const rWorld = renderRadius(0.35, vc.scale);
+          const r = Math.max(2, Math.min(90, (rWorld * f * h * 0.5) / s.cw));
+          const lod = selectLOD(r, vc.quality, mfMarkersRef.current.length);
+          if (lod === "simple" || lod === "full") {
+            drawPlanet(ctx, s.x, s.y, r, planetPalette(m.variant), hashSeed(m.id), vc.showAtmosphere, pitchAbs, lod === "full");
+          } else {
+            drawBodyCelestial(ctx, getBodyVisualProfile("planet"), s.x, s.y, r, lod, vc, pitchAbs);
+          }
+        }
+      }
+
       if (!sys) {
         ctx.fillStyle = "#ef4444"; ctx.font = "12px ui-monospace, monospace";
         ctx.fillText("⚠ invalid field expression — see sidebar", 12, h - 12);
@@ -770,6 +837,9 @@ export function Dynamics3DView() {
       if (modelModeRef.current === "gravity") {
         const p = screenToPlane(e.clientX - rect.left, e.clientY - rect.top, w, h, spawnZRef.current);
         if (p) spawnBodyAt(placeRef.current.preset, placeRef.current.variant, p);
+      } else if (modelModeRef.current === "mathfield") {
+        const p = screenToPlane(e.clientX - rect.left, e.clientY - rect.top, w, h, spawnZRef.current);
+        if (p) addMathMarker(p, placeRef.current.variant);
       }
       setPlaceArm(null);
       return;
@@ -885,6 +955,23 @@ export function Dynamics3DView() {
             <Range label="arrows" value={mfArrowScale} min={0.2} max={4} step={0.2} onChange={setMfArrowScale} fmt={(v) => v.toFixed(1)} />
             <Range label="probes" value={mfProbeCount} min={0} max={24} step={1} onChange={setMfProbeCount} fmt={(v) => String(v)} />
             <p className="mt-1 text-[10px] leading-tight text-slate-500">Arbitrary user-defined R³→R³ field — independent of the gravity model above; sampled on a grid, probes integrated with RK4.</p>
+
+            <h3 className="mb-1 mt-2 text-[10px] uppercase tracking-wide text-slate-500">Spawn probe — click to place</h3>
+            <div className="flex items-center gap-1">
+              <button onClick={() => armPlace("probe")}
+                className={`flex-1 rounded px-1.5 py-0.5 text-[11px] ${placeArm?.preset === "probe" ? "bg-cyan-500/20 text-cyan-200 ring-1 ring-cyan-400/50" : "bg-white/5 text-slate-400 hover:bg-white/10 hover:text-cyan-200"}`}>
+                {placeArm?.preset === "probe" ? "Click scene to place…" : "Spawn probe"}
+              </button>
+              <button onClick={clearMathMarkers} className="rounded bg-white/5 px-1.5 py-0.5 text-[11px] text-slate-400 hover:bg-white/10" title="Remove all spawned probes">clear ({mfMarkersRef.current.length})</button>
+            </div>
+            <div className="mt-1 flex items-center gap-1">
+              <span className="w-12 text-[11px] text-slate-500">planet</span>
+              <select value={addVariant} onChange={(e) => setAddVariant(e.target.value as PlanetVariant)} className="flex-1 rounded bg-slate-800/80 px-1.5 py-0.5 text-[11px] capitalize text-cyan-100 outline-none">
+                {PLANET_VARIANTS.map((v) => <option key={v} value={v}>{v}</option>)}
+              </select>
+            </div>
+            <Range label="spawn z" value={spawnZ} min={-15} max={15} step={1} onChange={setSpawnZ} fmt={(v) => String(v)} />
+            {placeArm?.preset === "probe" && <p className="text-[10px] text-cyan-300">Click in the scene to spawn a probe (on z={spawnZ}) that rides the field's flow. Click the button again to cancel.</p>}
           </div>
         )}
 
