@@ -39,6 +39,7 @@ import { makeSchwarzschild } from "../../mathlab/relativity/models/schwarzschild
 import { makeKerr } from "../../mathlab/relativity/models/kerr.ts";
 import { normalizeTimelikeVelocity } from "../../mathlab/relativity/normalize.ts";
 import { integrateGeodesic, type GeodesicTermination } from "../../mathlab/relativity/geodesic.ts";
+import { cartesianToSpherical, sphericalToCartesian } from "../../mathlab/relativity/sphericalCoords.ts";
 import { hasValue } from "../../mathlab/core/result.ts";
 
 const TYPE_COLOR: Record<BodyType, string> = {
@@ -80,11 +81,13 @@ interface GRTrace {
   error: string | null;
 }
 
-// User-spawned probe markers (click-to-place, §12) for Mathematical Field mode
-// — a lighter-weight sibling of gravity's Body3D spawning: no mass/physics
-// presets, just a seed position + appearance variant. Trajectories are cached
-// separately (per-marker), never stored inline here.
+// User-spawned markers (click-to-place, §12) for Mathematical Field / General
+// Relativity modes — a lighter-weight sibling of gravity's Body3D spawning:
+// no mass/physics presets, just a seed/start position + appearance variant.
+// Trajectories are cached separately (per-marker), never stored inline here.
 interface MFMarker { id: string; seed: Vec3; variant: PlanetVariant; }
+interface GRMarker { id: string; x0: number[]; variant: PlanetVariant; }
+interface GRMarkerTrace { key: string; points: Vec3[]; termination: GeodesicTermination | "domainError"; error: string | null; }
 
 function makeGRModel(id: GRMetricId, M: number, a: number): MetricModel {
   if (id === "minkowski") return minkowski;
@@ -93,24 +96,25 @@ function makeGRModel(id: GRMetricId, M: number, a: number): MetricModel {
 }
 
 /**
- * Build (x0, spatial u) from the simple UI controls, solve the missing u^t via
- * the timelike-normalization helper, integrate the geodesic, then convert the
- * spatial coordinates to Cartesian for the existing camera pipeline (VISUAL
- * ONLY — spherical->Cartesian is a coordinate-position plot, not curvature).
+ * Solve the missing u^t via the timelike-normalization helper, integrate the
+ * geodesic from an explicit start x0, then convert the spatial coordinates to
+ * Cartesian for the existing camera pipeline (VISUAL ONLY — spherical->Cartesian
+ * is a coordinate-position plot, not curvature). Shared by the panel's single
+ * main trace (computeGRTrace, x0 from the r0/x0/y0/z0 sliders) and user-spawned
+ * marker geodesics (x0 from a clicked point), so both stay perfectly in sync.
  */
-function computeGRTrace(model: MetricModel, ctl: GRControls): Omit<GRTrace, "key"> {
-  let x0: number[];
+function computeGRTraceFrom(model: MetricModel, ctl: GRControls, x0: number[]): Omit<GRTrace, "key"> {
   let uSpatial: number[];
   if (ctl.metricId === "minkowski") {
-    x0 = [0, ctl.x0, ctl.y0, ctl.z0];
     uSpatial = [ctl.vx, ctl.vy, ctl.vz];
   } else {
-    x0 = [0, ctl.r0, Math.PI / 2, 0]; // equatorial start
     // ponytail: dphi/dtau approximated by the standard circular-orbit dphi/dt
-    // rate (a=0 reduces to Schwarzschild's sqrt(M/r^3)), scaled by vFrac —
-    // a simple, physically-flavored slider, not a rigorous ZAMO/ISCO solve.
+    // rate at THIS x0's radius (a=0 reduces to Schwarzschild's sqrt(M/r^3)),
+    // scaled by vFrac — a simple, physically-flavored slider, not a rigorous
+    // ZAMO/ISCO solve.
+    const r = x0[1];
     const aTerm = ctl.metricId === "kerr" ? ctl.a : 0;
-    const omega = Math.sqrt(ctl.M) / (Math.pow(ctl.r0, 1.5) + aTerm * Math.sqrt(ctl.M));
+    const omega = Math.sqrt(ctl.M) / (Math.pow(r, 1.5) + aTerm * Math.sqrt(ctl.M));
     uSpatial = [0, 0, ctl.vFrac * omega]; // u^r=0, u^theta=0, u^phi=vFrac*omega
   }
   const normRes = normalizeTimelikeVelocity(model, x0, uSpatial);
@@ -122,9 +126,23 @@ function computeGRTrace(model: MetricModel, ctl: GRControls): Omit<GRTrace, "key
   const points: Vec3[] = result.states.map((s): Vec3 => {
     if (ctl.metricId === "minkowski") return [s.x[1], s.x[2], s.x[3]];
     const [, r, theta, phi] = s.x;
-    return [r * Math.sin(theta) * Math.cos(phi), r * Math.sin(theta) * Math.sin(phi), r * Math.cos(theta)];
+    return sphericalToCartesian(r, theta, phi);
   });
   return { points, termination: result.termination, error: null };
+}
+
+/** Cache key for marker geodesics — the shared inputs (metric/M/a/vFrac/velocity/
+ *  tau1/h) each marker's trace depends on, independent of its own x0. */
+function grMarkerKey(ctl: GRControls): string {
+  return `${ctl.metricId}|${ctl.M}|${ctl.a}|${ctl.vFrac}|${ctl.vx}|${ctl.vy}|${ctl.vz}|${ctl.tau1}|${ctl.h}`;
+}
+
+/** Build (x0, spatial u) from the simple UI controls (r0/x0/y0/z0 sliders). */
+function computeGRTrace(model: MetricModel, ctl: GRControls): Omit<GRTrace, "key"> {
+  const x0: number[] = ctl.metricId === "minkowski"
+    ? [0, ctl.x0, ctl.y0, ctl.z0]
+    : [0, ctl.r0, Math.PI / 2, 0]; // equatorial start
+  return computeGRTraceFrom(model, ctl, x0);
 }
 
 /** Content-hash signature of the active bodies (position/mass/strength/softening) —
@@ -287,6 +305,12 @@ export function Dynamics3DView() {
     x0: grX0x, y0: grX0y, z0: grX0z, vx: grV0x, vy: grV0y, vz: grV0z, tau1: grTau1, h: grH,
   };
   const grCache = useRef<GRTrace>({ key: "", points: [], termination: "completed", error: null });
+  // User-spawned test-particle geodesics — same metric/M/a/tau1/h as the main
+  // trace, just a different start point. Cached per-marker, recomputed only when
+  // those shared inputs change (not every animation frame), mirroring grCache.
+  const grMarkersRef = useRef<GRMarker[]>([]);
+  const grMarkerCacheRef = useRef<Map<string, GRMarkerTrace>>(new Map());
+  const [grMarkerError, setGrMarkerError] = useState<string | null>(null);
   const visualRef = useRef<BodyVisualConfig & { labels: boolean }>({
     renderMode: renderModeUI, quality, scale: bodyScale,
     showAtmosphere: effects.atmosphere, showGlow: effects.glow, showAccretionDisk: effects.accretionDisk,
@@ -359,6 +383,31 @@ export function Dynamics3DView() {
   const clearMathMarkers = () => {
     mfMarkersRef.current = [];
     mfMarkerCacheRef.current.clear();
+    forceUI((n) => n + 1);
+  };
+
+  // Spawn a General Relativity test-particle marker at a clicked world point
+  // (§12 sibling). Converts the click into the active metric's native spatial
+  // coordinates, then validates it against the current M/a/velocity settings up
+  // front so an invalid (e.g. inside-horizon) click is rejected instead of
+  // silently added — mirrors the main trace's domainError handling.
+  const addGRMarker = (worldPos: Vec3, variant: PlanetVariant) => {
+    const ctl = grCtl.current, model = grModelRef.current;
+    const x0 = ctl.metricId === "minkowski"
+      ? [0, worldPos[0], worldPos[1], worldPos[2]]
+      : ((): number[] => { const { r, theta, phi } = cartesianToSpherical(worldPos); return [0, r, theta, phi]; })();
+    const trace = computeGRTraceFrom(model, ctl, x0);
+    if (trace.error) { setGrMarkerError(trace.error); return; }
+    setGrMarkerError(null);
+    const id = `grm-${++addCounter}`;
+    grMarkersRef.current = [...grMarkersRef.current, { id, x0, variant }];
+    grMarkerCacheRef.current.set(id, { key: grMarkerKey(ctl), ...trace });
+    forceUI((n) => n + 1);
+  };
+  const clearGRMarkers = () => {
+    grMarkersRef.current = [];
+    grMarkerCacheRef.current.clear();
+    setGrMarkerError(null);
     forceUI((n) => n + 1);
   };
 
@@ -732,6 +781,43 @@ export function Dynamics3DView() {
         ctx.fillStyle = "#fb923c"; ctx.font = "12px ui-monospace, monospace";
         ctx.fillText(`⚠ geodesic terminated: ${trace.termination}`, 12, h - 12);
       }
+
+      // User-spawned test-particle geodesics (§12 sibling) — same metric/M/a/
+      // velocity/tau1/h as the main trace, different start point. Cached per-marker,
+      // recomputed only when those shared inputs change (grMarkerKey), never per frame.
+      const mKey = grMarkerKey(ctl);
+      const gmCache = grMarkerCacheRef.current;
+      for (const m of grMarkersRef.current) {
+        const cached = gmCache.get(m.id);
+        if (!cached || cached.key !== mKey) {
+          gmCache.set(m.id, { key: mKey, ...computeGRTraceFrom(model, ctl, m.x0) });
+        }
+      }
+      const pitchAbs = Math.min(1, Math.abs(Math.sin(pitch.current)) + 0.12);
+      ctx.strokeStyle = "rgba(250,204,21,0.45)"; ctx.lineWidth = 1.1;
+      for (const m of grMarkersRef.current) {
+        const mTrace = gmCache.get(m.id);
+        if (!mTrace || mTrace.error || mTrace.points.length < 2) continue;
+        ctx.beginPath();
+        let started = false;
+        for (const p of mTrace.points) {
+          const s = P(p);
+          if (!s) { started = false; continue; }
+          if (!started) { ctx.moveTo(s.x, s.y); started = true; } else ctx.lineTo(s.x, s.y);
+        }
+        ctx.stroke();
+        const tip = mTrace.points[mTrace.points.length - 1];
+        const s = P(tip);
+        if (!s) continue;
+        const rWorld = renderRadius(0.35, vc.scale);
+        const r = Math.max(2, Math.min(90, (rWorld * f * h * 0.5) / s.cw));
+        const lod = selectLOD(r, vc.quality, grMarkersRef.current.length);
+        if (lod === "simple" || lod === "full") {
+          drawPlanet(ctx, s.x, s.y, r, planetPalette(m.variant), hashSeed(m.id), vc.showAtmosphere, pitchAbs, lod === "full");
+        } else {
+          drawBodyCelestial(ctx, getBodyVisualProfile("planet"), s.x, s.y, r, lod, vc, pitchAbs);
+        }
+      }
     }
 
     // Trails (reconstructed from history while scrubbing, so the path matches the frame).
@@ -840,6 +926,9 @@ export function Dynamics3DView() {
       } else if (modelModeRef.current === "mathfield") {
         const p = screenToPlane(e.clientX - rect.left, e.clientY - rect.top, w, h, spawnZRef.current);
         if (p) addMathMarker(p, placeRef.current.variant);
+      } else if (modelModeRef.current === "gr") {
+        const p = screenToPlane(e.clientX - rect.left, e.clientY - rect.top, w, h, spawnZRef.current);
+        if (p) addGRMarker(p, placeRef.current.variant);
       }
       setPlaceArm(null);
       return;
@@ -1016,6 +1105,24 @@ export function Dynamics3DView() {
             <Range label="tau1" value={grTau1} min={1} max={300} step={1} onChange={setGrTau1} fmt={(v) => String(v)} />
             <Range label="h" value={grH} min={0.001} max={0.2} step={0.001} onChange={setGrH} fmt={(v) => v.toFixed(3)} />
             <p className="mt-1 text-[10px] leading-tight text-slate-500">Coordinate-position plot of the integrated geodesic (spherical→Cartesian for Schwarzschild/Kerr) — not a literal spacetime embedding.</p>
+
+            <h3 className="mb-1 mt-2 text-[10px] uppercase tracking-wide text-slate-500">Spawn test particle — click to place</h3>
+            <div className="flex items-center gap-1">
+              <button onClick={() => armPlace("probe")}
+                className={`flex-1 rounded px-1.5 py-0.5 text-[11px] ${placeArm?.preset === "probe" ? "bg-cyan-500/20 text-cyan-200 ring-1 ring-cyan-400/50" : "bg-white/5 text-slate-400 hover:bg-white/10 hover:text-cyan-200"}`}>
+                {placeArm?.preset === "probe" ? "Click scene to place…" : "Spawn particle"}
+              </button>
+              <button onClick={clearGRMarkers} className="rounded bg-white/5 px-1.5 py-0.5 text-[11px] text-slate-400 hover:bg-white/10" title="Remove all spawned geodesics">clear ({grMarkersRef.current.length})</button>
+            </div>
+            <div className="mt-1 flex items-center gap-1">
+              <span className="w-12 text-[11px] text-slate-500">planet</span>
+              <select value={addVariant} onChange={(e) => setAddVariant(e.target.value as PlanetVariant)} className="flex-1 rounded bg-slate-800/80 px-1.5 py-0.5 text-[11px] capitalize text-cyan-100 outline-none">
+                {PLANET_VARIANTS.map((v) => <option key={v} value={v}>{v}</option>)}
+              </select>
+            </div>
+            <Range label="spawn z" value={spawnZ} min={-15} max={15} step={1} onChange={setSpawnZ} fmt={(v) => String(v)} />
+            {placeArm?.preset === "probe" && <p className="text-[10px] text-cyan-300">Click in the scene to launch a test-particle geodesic (on z={spawnZ}), using the M/a/velocity settings above. Click the button again to cancel.</p>}
+            {grMarkerError && <p className="mt-1 text-[11px] text-red-300">domainError: {grMarkerError} — click rejected (no valid timelike velocity there).</p>}
           </div>
         )}
 
