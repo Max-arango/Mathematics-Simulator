@@ -83,10 +83,12 @@ interface GRTrace {
 
 // User-spawned markers (click-to-place, §12) for Mathematical Field / General
 // Relativity modes — a lighter-weight sibling of gravity's Body3D spawning:
-// no mass/physics presets, just a seed/start position + appearance variant.
+// no mass/physics presets, just a seed/start position + appearance (type +
+// variant, from the same BODY_PRESETS row gravity mode uses — visual only,
+// never fed into the trajectory/geodesic math for these modes).
 // Trajectories are cached separately (per-marker), never stored inline here.
-interface MFMarker { id: string; seed: Vec3; variant: PlanetVariant; }
-interface GRMarker { id: string; x0: number[]; variant: PlanetVariant; }
+interface MFMarker { id: string; seed: Vec3; variant: PlanetVariant; type: BodyType; radius: number; }
+interface GRMarker { id: string; x0: number[]; variant: PlanetVariant; type: BodyType; radius: number; }
 interface GRMarkerTrace { key: string; points: Vec3[]; termination: GeodesicTermination | "domainError"; error: string | null; }
 
 function makeGRModel(id: GRMetricId, M: number, a: number): MetricModel {
@@ -375,9 +377,12 @@ export function Dynamics3DView() {
   };
 
   // Spawn a Mathematical Field probe marker at a clicked seed point (§12 sibling —
-  // no mass/type presets, just a variant for the planet sprite riding the flow).
-  const addMathMarker = (seed: Vec3, variant: PlanetVariant) => {
-    mfMarkersRef.current = [...mfMarkersRef.current, { id: `mfm-${++addCounter}`, seed, variant }];
+  // reuses the same BODY_PRESETS row as gravity mode, but only `type`/`radius`
+  // are read from the preset for appearance; mass/softening/absorptionRadius are
+  // irrelevant here and never touch traceMathTrajectory3D).
+  const addMathMarker = (preset: string, seed: Vec3, variant: PlanetVariant) => {
+    const p = BODY_PRESETS[preset];
+    mfMarkersRef.current = [...mfMarkersRef.current, { id: `mfm-${++addCounter}`, seed, variant, type: p.type, radius: p.radius ?? 0.3 }];
     forceUI((n) => n + 1);
   };
   const clearMathMarkers = () => {
@@ -391,7 +396,7 @@ export function Dynamics3DView() {
   // coordinates, then validates it against the current M/a/velocity settings up
   // front so an invalid (e.g. inside-horizon) click is rejected instead of
   // silently added — mirrors the main trace's domainError handling.
-  const addGRMarker = (worldPos: Vec3, variant: PlanetVariant) => {
+  const addGRMarker = (preset: string, worldPos: Vec3, variant: PlanetVariant) => {
     const ctl = grCtl.current, model = grModelRef.current;
     const x0 = ctl.metricId === "minkowski"
       ? [0, worldPos[0], worldPos[1], worldPos[2]]
@@ -399,8 +404,9 @@ export function Dynamics3DView() {
     const trace = computeGRTraceFrom(model, ctl, x0);
     if (trace.error) { setGrMarkerError(trace.error); return; }
     setGrMarkerError(null);
+    const p = BODY_PRESETS[preset];
     const id = `grm-${++addCounter}`;
-    grMarkersRef.current = [...grMarkersRef.current, { id, x0, variant }];
+    grMarkersRef.current = [...grMarkersRef.current, { id, x0, variant, type: p.type, radius: p.radius ?? 0.3 }];
     grMarkerCacheRef.current.set(id, { key: grMarkerKey(ctl), ...trace });
     forceUI((n) => n + 1);
   };
@@ -730,13 +736,14 @@ export function Dynamics3DView() {
           const tip = cached.points[cached.points.length - 1];
           const s = P(tip);
           if (!s) continue;
-          const rWorld = renderRadius(0.35, vc.scale);
+          const rWorld = renderRadius(m.radius, vc.scale);
           const r = Math.max(2, Math.min(90, (rWorld * f * h * 0.5) / s.cw));
           const lod = selectLOD(r, vc.quality, mfMarkersRef.current.length);
-          if (lod === "simple" || lod === "full") {
+          const profile = getBodyVisualProfile(m.type);
+          if (profile.shader === "planet" && (lod === "simple" || lod === "full")) {
             drawPlanet(ctx, s.x, s.y, r, planetPalette(m.variant), hashSeed(m.id), vc.showAtmosphere, pitchAbs, lod === "full");
           } else {
-            drawBodyCelestial(ctx, getBodyVisualProfile("planet"), s.x, s.y, r, lod, vc, pitchAbs);
+            drawBodyCelestial(ctx, profile, s.x, s.y, r, lod, vc, pitchAbs);
           }
         }
       }
@@ -809,13 +816,14 @@ export function Dynamics3DView() {
         const tip = mTrace.points[mTrace.points.length - 1];
         const s = P(tip);
         if (!s) continue;
-        const rWorld = renderRadius(0.35, vc.scale);
+        const rWorld = renderRadius(m.radius, vc.scale);
         const r = Math.max(2, Math.min(90, (rWorld * f * h * 0.5) / s.cw));
         const lod = selectLOD(r, vc.quality, grMarkersRef.current.length);
-        if (lod === "simple" || lod === "full") {
+        const profile = getBodyVisualProfile(m.type);
+        if (profile.shader === "planet" && (lod === "simple" || lod === "full")) {
           drawPlanet(ctx, s.x, s.y, r, planetPalette(m.variant), hashSeed(m.id), vc.showAtmosphere, pitchAbs, lod === "full");
         } else {
-          drawBodyCelestial(ctx, getBodyVisualProfile("planet"), s.x, s.y, r, lod, vc, pitchAbs);
+          drawBodyCelestial(ctx, profile, s.x, s.y, r, lod, vc, pitchAbs);
         }
       }
     }
@@ -925,10 +933,10 @@ export function Dynamics3DView() {
         if (p) spawnBodyAt(placeRef.current.preset, placeRef.current.variant, p);
       } else if (modelModeRef.current === "mathfield") {
         const p = screenToPlane(e.clientX - rect.left, e.clientY - rect.top, w, h, spawnZRef.current);
-        if (p) addMathMarker(p, placeRef.current.variant);
+        if (p) addMathMarker(placeRef.current.preset, p, placeRef.current.variant);
       } else if (modelModeRef.current === "gr") {
         const p = screenToPlane(e.clientX - rect.left, e.clientY - rect.top, w, h, spawnZRef.current);
-        if (p) addGRMarker(p, placeRef.current.variant);
+        if (p) addGRMarker(placeRef.current.preset, p, placeRef.current.variant);
       }
       setPlaceArm(null);
       return;
@@ -1046,11 +1054,11 @@ export function Dynamics3DView() {
             <p className="mt-1 text-[10px] leading-tight text-slate-500">Arbitrary user-defined R³→R³ field — independent of the gravity model above; sampled on a grid, probes integrated with RK4.</p>
 
             <h3 className="mb-1 mt-2 text-[10px] uppercase tracking-wide text-slate-500">Spawn probe — click to place</h3>
-            <div className="flex items-center gap-1">
-              <button onClick={() => armPlace("probe")}
-                className={`flex-1 rounded px-1.5 py-0.5 text-[11px] ${placeArm?.preset === "probe" ? "bg-cyan-500/20 text-cyan-200 ring-1 ring-cyan-400/50" : "bg-white/5 text-slate-400 hover:bg-white/10 hover:text-cyan-200"}`}>
-                {placeArm?.preset === "probe" ? "Click scene to place…" : "Spawn probe"}
-              </button>
+            <div className="flex flex-wrap items-center gap-1">
+              {Object.keys(BODY_PRESETS).map((k) => (
+                <button key={k} onClick={() => armPlace(k)}
+                  className={`rounded px-1.5 py-0.5 text-[11px] ${placeArm?.preset === k ? "bg-cyan-500/20 text-cyan-200 ring-1 ring-cyan-400/50" : "bg-white/5 text-slate-400 hover:bg-white/10 hover:text-cyan-200"}`}>{k}</button>
+              ))}
               <button onClick={clearMathMarkers} className="rounded bg-white/5 px-1.5 py-0.5 text-[11px] text-slate-400 hover:bg-white/10" title="Remove all spawned probes">clear ({mfMarkersRef.current.length})</button>
             </div>
             <div className="mt-1 flex items-center gap-1">
@@ -1060,7 +1068,7 @@ export function Dynamics3DView() {
               </select>
             </div>
             <Range label="spawn z" value={spawnZ} min={-15} max={15} step={1} onChange={setSpawnZ} fmt={(v) => String(v)} />
-            {placeArm?.preset === "probe" && <p className="text-[10px] text-cyan-300">Click in the scene to spawn a probe (on z={spawnZ}) that rides the field's flow. Click the button again to cancel.</p>}
+            {placeArm && <p className="text-[10px] text-cyan-300">Click in the scene to spawn a probe (on z={spawnZ}) that rides the field's flow, appearing as <b>{placeArm.preset}</b>. Click the button again to cancel.</p>}
           </div>
         )}
 
@@ -1107,11 +1115,11 @@ export function Dynamics3DView() {
             <p className="mt-1 text-[10px] leading-tight text-slate-500">Coordinate-position plot of the integrated geodesic (spherical→Cartesian for Schwarzschild/Kerr) — not a literal spacetime embedding.</p>
 
             <h3 className="mb-1 mt-2 text-[10px] uppercase tracking-wide text-slate-500">Spawn test particle — click to place</h3>
-            <div className="flex items-center gap-1">
-              <button onClick={() => armPlace("probe")}
-                className={`flex-1 rounded px-1.5 py-0.5 text-[11px] ${placeArm?.preset === "probe" ? "bg-cyan-500/20 text-cyan-200 ring-1 ring-cyan-400/50" : "bg-white/5 text-slate-400 hover:bg-white/10 hover:text-cyan-200"}`}>
-                {placeArm?.preset === "probe" ? "Click scene to place…" : "Spawn particle"}
-              </button>
+            <div className="flex flex-wrap items-center gap-1">
+              {Object.keys(BODY_PRESETS).map((k) => (
+                <button key={k} onClick={() => armPlace(k)}
+                  className={`rounded px-1.5 py-0.5 text-[11px] ${placeArm?.preset === k ? "bg-cyan-500/20 text-cyan-200 ring-1 ring-cyan-400/50" : "bg-white/5 text-slate-400 hover:bg-white/10 hover:text-cyan-200"}`}>{k}</button>
+              ))}
               <button onClick={clearGRMarkers} className="rounded bg-white/5 px-1.5 py-0.5 text-[11px] text-slate-400 hover:bg-white/10" title="Remove all spawned geodesics">clear ({grMarkersRef.current.length})</button>
             </div>
             <div className="mt-1 flex items-center gap-1">
@@ -1121,7 +1129,7 @@ export function Dynamics3DView() {
               </select>
             </div>
             <Range label="spawn z" value={spawnZ} min={-15} max={15} step={1} onChange={setSpawnZ} fmt={(v) => String(v)} />
-            {placeArm?.preset === "probe" && <p className="text-[10px] text-cyan-300">Click in the scene to launch a test-particle geodesic (on z={spawnZ}), using the M/a/velocity settings above. Click the button again to cancel.</p>}
+            {placeArm && <p className="text-[10px] text-cyan-300">Click in the scene to launch a test-particle geodesic (on z={spawnZ}), using the M/a/velocity settings above, appearing as <b>{placeArm.preset}</b>. Click the button again to cancel.</p>}
             {grMarkerError && <p className="mt-1 text-[11px] text-red-300">domainError: {grMarkerError} — click rejected (no valid timelike velocity there).</p>}
           </div>
         )}
