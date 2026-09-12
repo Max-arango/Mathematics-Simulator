@@ -97,6 +97,13 @@ parser + ODE solver are reused — no second engine, no `eval`):
   **provenance**; the 3D trace is captioned as a coordinate-position plot, not a
   literal spacetime embedding.
 
+**Click to spawn** — every model shares the same body-preset picker (Particle,
+Planet, Star, Black Hole, Singularity, with procedural planet palettes): click
+the canvas to place a celestial marker. In Newtonian gravity it's a real
+N-body with mass; in Mathematical Field and General Relativity it's a visual
+marker only, advected by the field / integrated along a geodesic from the
+clicked point — the preset never leaks mass or softening into that physics.
+
 ### 🔬 Inspector — mathematical microscope
 - Select an object (expression, matrix, vector, topological surface) and get a
   typed report: structure/AST, classification, domain, calculus (`f'`, `f''`,
@@ -120,7 +127,7 @@ parser + ODE solver are reused — no second engine, no `eval`):
 
 ## Shared math core (`src/mathlab/`)
 
-The correctness-critical layer, unit-tested (**1028 tests**), all consuming one AST:
+The correctness-critical layer, unit-tested (**1062 tests**), all consuming one AST:
 
 - `core/` — `lexer` → `parser` → `ast`, real `eval` (whitelisted functions,
   **never `eval`/`Function`**), `simplify`, `print`, `complexGlsl` (AST → GLSL),
