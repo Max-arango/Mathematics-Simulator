@@ -210,6 +210,10 @@ export function Dynamics3DView() {
   const [spawnZ, setSpawnZ] = useState(0);
   const placeRef = useRef(placeArm); placeRef.current = placeArm;
   const spawnZRef = useRef(spawnZ); spawnZRef.current = spawnZ;
+  // Disarm click-to-place on mode switch — otherwise a stray click right after
+  // switching (e.g. into Gravity) while still armed from a previous mode spawns
+  // a real physics body unexpectedly.
+  useEffect(() => { setPlaceArm(null); }, [modelMode]);
 
   const [fieldDensity, setFieldDensity] = useState(9);
   const [deformScale, setDeformScale] = useState(0.05);
@@ -294,7 +298,7 @@ export function Dynamics3DView() {
   // Trajectories are cached per-marker (keyed on the sys reference + seed), never
   // recomputed on a camera-only frame.
   const mfMarkersRef = useRef<MFMarker[]>([]);
-  const mfMarkerCacheRef = useRef<Map<string, { sys: DynamicalSystem | null; points: Vec3[] }>>(new Map());
+  const mfMarkerCacheRef = useRef<Map<string, { sys: DynamicalSystem | null; key: string; points: Vec3[] }>>(new Map());
   // GR controls mirrored into a ref for the rAF loop, same pattern as fieldCtl/mfCtl —
   // and a cache recomputed only when the key changes, never per animation frame.
   const grModelRef = useRef<MetricModel>(grModel); grModelRef.current = grModel;
@@ -381,6 +385,7 @@ export function Dynamics3DView() {
   // are read from the preset for appearance; mass/softening/absorptionRadius are
   // irrelevant here and never touch traceMathTrajectory3D).
   const addMathMarker = (preset: string, seed: Vec3, variant: PlanetVariant) => {
+    if (!mathSysRef.current) return; // invalid field expression — mfError is already shown inline
     const p = BODY_PRESETS[preset];
     mfMarkersRef.current = [...mfMarkersRef.current, { id: `mfm-${++addCounter}`, seed, variant, type: p.type, radius: p.radius ?? 0.3 }];
     forceUI((n) => n + 1);
@@ -402,7 +407,21 @@ export function Dynamics3DView() {
       ? [0, worldPos[0], worldPos[1], worldPos[2]]
       : ((): number[] => { const { r, theta, phi } = cartesianToSpherical(worldPos); return [0, r, theta, phi]; })();
     const trace = computeGRTraceFrom(model, ctl, x0);
-    if (trace.error) { setGrMarkerError(trace.error); return; }
+    if (trace.error) {
+      setGrMarkerError(`domainError: ${trace.error} — click rejected (no valid timelike velocity there).`);
+      return;
+    }
+    // Even with a valid 4-velocity, integrateGeodesic's own validRegion check can
+    // halt immediately (e.g. Kerr off-equatorial points inside the horizon can
+    // still pass normalizeTimelikeVelocity) — that yields a 1-point trace the draw
+    // loop never renders (points.length < 2 guard), so without this check the
+    // marker would sit in grMarkersRef forever as an invisible phantom with no
+    // user-facing error. Gate on the same "is it drawable" condition the draw
+    // loop already uses instead of leaving it silently un-rendered.
+    if (trace.points.length < 2) {
+      setGrMarkerError(`geodesic terminated immediately (${trace.termination}) — click rejected (no visible trajectory at that point).`);
+      return;
+    }
     setGrMarkerError(null);
     const p = BODY_PRESETS[preset];
     const id = `grm-${++addCounter}`;
@@ -708,15 +727,19 @@ export function Dynamics3DView() {
       // above). Each marker's trajectory is cached per-marker (keyed on the sys
       // reference) and drawn as a polyline + a planet sprite at its current tip.
       const mmCache = mfMarkerCacheRef.current;
+      // Keyed on sys identity (field expression) AND ctl.extent (feeds dt/bounds
+      // below) — extent alone changing (e.g. dragging the slider) must also
+      // invalidate a marker's cached trace, mirroring grMarkerKey's approach.
+      const mKey = `${ctl.extent}`;
       for (const m of mfMarkersRef.current) {
         const cached = mmCache.get(m.id);
-        if (sys && (!cached || cached.sys !== sys)) {
+        if (sys && (!cached || cached.sys !== sys || cached.key !== mKey)) {
           const b = ctl.extent;
           const { points } = traceMathTrajectory3D(sys, m.seed, {
             dt: Math.max(0.005, b * 0.004), maxSteps: 400,
             bounds: { min: [-b * 3, -b * 3, -b * 3], max: [b * 3, b * 3, b * 3] },
           });
-          mmCache.set(m.id, { sys, points });
+          mmCache.set(m.id, { sys, key: mKey, points });
         }
       }
       if (sys) {
@@ -1130,7 +1153,7 @@ export function Dynamics3DView() {
             </div>
             <Range label="spawn z" value={spawnZ} min={-15} max={15} step={1} onChange={setSpawnZ} fmt={(v) => String(v)} />
             {placeArm && <p className="text-[10px] text-cyan-300">Click in the scene to launch a test-particle geodesic (on z={spawnZ}), using the M/a/velocity settings above, appearing as <b>{placeArm.preset}</b>. Click the button again to cancel.</p>}
-            {grMarkerError && <p className="mt-1 text-[11px] text-red-300">domainError: {grMarkerError} — click rejected (no valid timelike velocity there).</p>}
+            {grMarkerError && <p className="mt-1 text-[11px] text-red-300">{grMarkerError}</p>}
           </div>
         )}
 
